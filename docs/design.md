@@ -47,8 +47,9 @@ PowerShell のシムも同じ理由で `[Console]::OutputEncoding` を呼び出�
 ### シムには本体 exe の絶対パスを埋める
 
 `navkit init` は `current_exe()` の場所を出力に埋める。PATH に依存しないので、
-cargo build したままの targetelease からでも試せる。cmd のシムは exe のフォルダを PATH の先頭に足し、
-`for /f` の中では `navkit` と裸の名前で呼ぶ(引用符付きのフルパスは上記の理由で壊れる)。
+cargo build したままの target/release からでも試せる。cmd のシムは自分のフォルダ(`%~dp0`)と exe のフォルダを
+この順で PATH の先頭に足し、`for /f` の中では `navkit` と裸の名前で呼ぶ(引用符付きのフルパスは上記の理由で壊れる)。
+自分のフォルダを先にするのは、リリースの zip(exe + .cmd 4 本)を PATH のフォルダに展開するだけで動かすため。
 
 ### エイリアスは関数より優先される(PowerShell)
 

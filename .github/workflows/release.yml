@@ -33,6 +33,9 @@ jobs:
           mkdir "$name"
           if [ "${{ matrix.archive }}" = zip ]; then
             cp "target/${{ matrix.target }}/release/navkit.exe" "$name/"
+            # The cmd shims look for navkit.exe next to themselves first,
+            # so unpacking the zip into a PATH folder is the whole install.
+            "target/${{ matrix.target }}/release/navkit.exe" init cmd --out "$name"
             7z a "$name.zip" "$name"
           else
             cp "target/${{ matrix.target }}/release/navkit" "$name/"

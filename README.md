@@ -24,6 +24,7 @@ eval "$(navkit init bash)"
 ```
 
 cmd.exe: PATH の通ったフォルダに c.cmd cf.cmd z.cmd zi.cmd を書き出す。
+リリースの zip にはこの 4 本が同梱されているので、zip を PATH の通ったフォルダに展開するだけでよい。
 
 ```
 navkit init cmd --out C:\path\on\PATH
