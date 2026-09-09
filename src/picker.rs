@@ -525,6 +525,12 @@ fn highlight_line<'a>(current: bool, text: &'a str, indices: &[u32]) -> Line<'a>
     Line::from(spans)
 }
 
+/// 40% of the screen, at least the minimum, never more than the screen has.
+fn inline_height(rows: u16) -> u16 {
+    let wanted = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
+    wanted.max(INLINE_MIN_HEIGHT).min(rows.max(1))
+}
+
 /// The picker draws on stderr so stdout stays clean for the selected path.
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stderr>>,
@@ -535,8 +541,7 @@ impl TerminalGuard {
     /// so the command history above stays visible.
     fn enter() -> Result<Self, Error> {
         let (_, rows) = crossterm::terminal::size()?;
-        let height = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
-        let height = height.clamp(INLINE_MIN_HEIGHT, rows.max(1));
+        let height = inline_height(rows);
         enable_raw_mode()?;
         let terminal = Terminal::with_options(
             CrosstermBackend::new(io::stderr()),
@@ -628,6 +633,14 @@ mod tests {
             pieces(&line),
             vec![("  ".into(), false), ("docs".into(), false)]
         );
+    }
+
+    #[test]
+    fn inline_height_fits_small_terminals() {
+        assert_eq!(inline_height(50), 20);
+        assert_eq!(inline_height(20), INLINE_MIN_HEIGHT);
+        assert_eq!(inline_height(10), 10);
+        assert_eq!(inline_height(0), 1);
     }
 
     #[test]
