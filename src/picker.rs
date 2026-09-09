@@ -1054,7 +1054,11 @@ mod tests {
 
     #[test]
     fn location_spans_bold_the_last_segment() {
-        let spans = location_spans(Path::new(r"C:\Users\takay\thither"));
+        #[cfg(windows)]
+        let (path, parent) = (r"C:\Users\takay\thither", r"C:\Users\takay\");
+        #[cfg(not(windows))]
+        let (path, parent) = ("/home/takay/thither", "/home/takay/");
+        let spans = location_spans(Path::new(path));
         let parts: Vec<(String, bool)> = spans
             .iter()
             .map(|s| {
@@ -1066,10 +1070,7 @@ mod tests {
             .collect();
         assert_eq!(
             parts,
-            vec![
-                (r"C:\Users\takay\".to_string(), false),
-                ("thither".to_string(), true)
-            ]
+            vec![(parent.to_string(), false), ("thither".to_string(), true)]
         );
     }
 
