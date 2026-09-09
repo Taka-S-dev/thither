@@ -2,6 +2,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The temporary directory with any 8.3 short components resolved.
+///
+/// Some Windows hosts put a short path in `TEMP` (`C:\Users\RUNNER~1\...`)
+/// while the shells under test report the long form of the same directory,
+/// so paths built here would never match what they print back.
+fn temp_dir() -> PathBuf {
+    let temp = std::env::temp_dir();
+    let Ok(canonical) = std::fs::canonicalize(&temp) else {
+        return temp;
+    };
+    let text = canonical.to_string_lossy().into_owned();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+}
+
 struct Fixture {
     root: PathBuf,
     destination: PathBuf,
@@ -14,8 +28,7 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("thither-shell-{}-{nonce}", std::process::id()));
+        let root = temp_dir().join(format!("thither-shell-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let destination = root.join("日本語 space & ! % [dir]");
         std::fs::create_dir(&destination).unwrap();
@@ -79,7 +92,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Only remove the uniquely created test directory directly below the temp root.
-        assert_eq!(self.root.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(self.root.parent(), Some(temp_dir().as_path()));
         std::fs::remove_dir_all(&self.root).unwrap();
     }
 }
