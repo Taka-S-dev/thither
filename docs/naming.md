@@ -36,3 +36,25 @@ thither を本命にする理由:
 
 シム名(`c` `cf` `z` `zi`)は名前を変えても据え置く。exe 名を打つのは init の 1 行だけなので、
 長さより「意味が通ること」と「衝突しないこと」を優先した。
+
+## navkit を正式名にしない理由
+
+navkit は 2026-09-09 にバッチ版を置いたフォルダ名(navigation kit の略)がそのまま残ったもの。
+仮称として使ってきたが、正式名には向かない。
+
+- TomTom が自動車向けナビゲーションエンジンを NavKit の名前で売っている。分野は違うが商標として先行する
+- GitHub に同名リポジトリが 3 つある(iOS のナビゲーションバー、Hitman の MOD ツール、ナビゲーションライブラリ)
+- kit は道具箱の意味で、複数のものをまとめた印象を与える。実体は 1 つのコマンドなので合わない
+
+## 候補 2 巡目(同じ日に同じ方法で実測)
+
+| 候補 | 意味 | crates.io | GitHub の同名 | 判断 |
+|---|---|---|---|---|
+| stile | 柵を越える踏み段 | 空き | 9 star のみ | style の打ち間違いに見える。却下 |
+| guidepost | 分かれ道の道標 | 空き | 21 star のみ | 無難だが平凡で長い。次点 |
+| trailhead | 登山道の入口 | 空き | Salesforce の学習サービスが有名 | 却下 |
+| doorway | 戸口 | 空き | iOS のアニメーション 204 star | SEO の doorway page を連想する。却下 |
+| thence / hence | その場所から | 空き | - | from の意味なので cd と向きが逆。却下 |
+| cairn / blaze / quay / haven / helm / beacon / buoy / fathom / sextant / threshold / milestone / signpost | 航海・道標系 | 使用済み | - | 却下 |
+
+2 巡目で thither を上回るものは出なかった。次点は guidepost。
