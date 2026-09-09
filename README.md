@@ -270,6 +270,6 @@ PowerShell 7（`pwsh`）と bash が必要。Windows では Git Bash を使う
 cargo test --release --bin thither benchmark_local_tree -- --ignored --nocapture
 ```
 
-2026-09-09 の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルを
-87〜102 ms で走査し、`src` への検索更新は約5〜6 ms（3回測定）。
+2026-09-10 の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルを
+94〜100 ms で走査し、`src` への検索更新は約5〜7 ms（3回測定）。
 これは内部処理の測定で、プロセス起動から実端末への初回表示や入力遅延を保証する値ではない。

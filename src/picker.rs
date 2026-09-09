@@ -2115,9 +2115,9 @@ mod tests {
     #[test]
     fn location_spans_bold_the_last_segment() {
         #[cfg(windows)]
-        let (path, parent) = (r"C:\Users\takay\thither", r"C:\Users\takay\");
+        let (path, parent) = (r"C:\Users\example\thither", r"C:\Users\example\");
         #[cfg(not(windows))]
-        let (path, parent) = ("/home/takay/thither", "/home/takay/");
+        let (path, parent) = ("/home/example/thither", "/home/example/");
         let spans = location_spans(Path::new(path));
         let parts: Vec<(String, bool)> = spans
             .iter()
