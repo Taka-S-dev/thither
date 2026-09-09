@@ -1,4 +1,4 @@
-# navkit (仮称)
+# thither
 
 cmd.exe / PowerShell / bash で同じ操作感のディレクトリ移動ツール。
 数文字打って Enter で cd する。Rust + ratatui。
@@ -9,21 +9,21 @@ cmd.exe / PowerShell / bash で同じ操作感のディレクトリ移動ツー�
 
 ### Windows: zip を展開するだけ
 
-リリースの zip には navkit.exe と、cmd.exe 用の `c.cmd` `cf.cmd` `z.cmd` `zi.cmd`、
+リリースの zip には thither.exe と、cmd.exe 用の `c.cmd` `cf.cmd` `z.cmd` `zi.cmd`、
 PowerShell 用の `c.ps1` `cf.ps1` `z.ps1` `zi.ps1` が入っている。
 PATH の通ったフォルダに展開すれば、cmd.exe でも PowerShell でも設定ファイルを触らずに使える。
 
 - 展開したフォルダの中身がブロックされて .ps1 が動かないときは、そのフォルダで `Unblock-File *.ps1`
 - PowerShell の実行ポリシーが Restricted のままだと .ps1 は動かない。`RemoteSigned` にするか、下の 1 行方式を使う
 - `$PROFILE` で zoxide init している場合、`z` と `zi` は zoxide のエイリアスが優先される。
-  navkit の `zi` を使いたいときは下の 1 行方式にする(エイリアスを外してから定義する)
+  thither の `zi` を使いたいときは下の 1 行方式にする(エイリアスを外してから定義する)
 
 手元でビルドしたときは、同じ構成を自分で作れる。
 
 ```powershell
 cargo build --release
-navkit init cmd --out C:\path\on\PATH
-navkit init powershell --out C:\path\on\PATH
+thither init cmd --out C:\path\on\PATH
+thither init powershell --out C:\path\on\PATH
 ```
 
 ### PowerShell: プロファイルに 1 行
@@ -31,7 +31,7 @@ navkit init powershell --out C:\path\on\PATH
 `$PROFILE` の zoxide init より後に足す。
 
 ```powershell
-Invoke-Expression (& C:\path\to\navkit.exe init powershell | Out-String)
+Invoke-Expression (& C:\path\to\thither.exe init powershell | Out-String)
 ```
 
 ### bash / zsh: rc ファイルに 1 行
@@ -39,7 +39,7 @@ Invoke-Expression (& C:\path\to\navkit.exe init powershell | Out-String)
 `~/.bashrc` か `~/.zshrc` の zoxide init より後に足す。
 
 ```bash
-eval "$(navkit init bash)"
+eval "$(thither init bash)"
 ```
 
 ## コマンド

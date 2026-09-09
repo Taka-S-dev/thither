@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn location_spans_bold_the_last_segment() {
-        let spans = location_spans(Path::new(r"C:\Users\takay\navkit"));
+        let spans = location_spans(Path::new(r"C:\Users\takay\thither"));
         let parts: Vec<(String, bool)> = spans
             .iter()
             .map(|s| {
@@ -1068,7 +1068,7 @@ mod tests {
             parts,
             vec![
                 (r"C:\Users\takay\".to_string(), false),
-                ("navkit".to_string(), true)
+                ("thither".to_string(), true)
             ]
         );
     }
@@ -1088,7 +1088,7 @@ mod tests {
 
     #[test]
     fn list_dir_puts_directories_first() {
-        let tmp = std::env::temp_dir().join(format!("navkit-preview-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("thither-preview-{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("zeta")).unwrap();
         std::fs::write(tmp.join("Alpha.txt"), "").unwrap();
         std::fs::write(tmp.join("beta.txt"), "").unwrap();

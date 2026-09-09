@@ -1,6 +1,6 @@
 # 設計書
 
-対象: シェル横断のディレクトリ移動ツール(仮称 navkit。正式名は未定、docs/naming.md 参照)。
+対象: シェル横断のディレクトリ移動ツール(thither)。名前を選んだ経緯は docs/naming.md。
 このファイルは「なぜこの形にしたか」を残す。手順や操作は docs/spec.md。
 
 ## 目的
@@ -22,21 +22,21 @@ cmd.exe / PowerShell 7 / (将来) bash で同じ操作感にする。
 「本体は選んだパスを標準出力に書く」「各シェル用の数行のシムが受け取って cd する」の二層にする。
 
 ```
-navkit pick [--mode dirs|files|recent] [--query Q]  → 選択パスを stdout(1 行)、未選択なら exit 1
-navkit init cmd|powershell|bash                     → そのシェル用のシム定義を stdout
+thither pick [--mode dirs|files|recent] [--query Q]  → 選択パスを stdout(1 行)、未選択なら exit 1
+thither init cmd|powershell|bash                     → そのシェル用のシム定義を stdout
 ```
 
 シムの利用側:
 
-- PowerShell: `Invoke-Expression (& navkit init powershell | Out-String)` を $PROFILE に 1 行
-- cmd: `navkit init cmd` が出力する .cmd 群を PATH 上のフォルダに置く(cmd に関数は無い)
-- bash/zsh: `eval "$(navkit init bash)"`
+- PowerShell: `Invoke-Expression (& thither init powershell | Out-String)` を $PROFILE に 1 行
+- cmd: `thither init cmd` が出力する .cmd 群を PATH 上のフォルダに置く(cmd に関数は無い)
+- bash/zsh: `eval "$(thither init bash)"`
 
 ### cmd.exe はコマンドライン引数を壊す(2026-09-09 に実測)
 
 - `call` は引数中の `^` を再解釈して消す。`^^` と書いても `for /f ('...')` の子 cmd がもう一度食う
 - `for /f ('...')` 内で exe をフルパス + 引用符で呼ぶと、引用符が 3 つ以上になった時点で先頭と末尾だけ剥がされて壊れる
-- 対策: 本体はクエリを引数ではなく環境変数(`NAVKIT_QUERY`)でも受け取れるようにする。cmd のシムは引数を環境変数に入れてから本体を呼ぶ
+- 対策: 本体はクエリを引数ではなく環境変数(`THITHER_QUERY`)でも受け取れるようにする。cmd のシムは引数を環境変数に入れてから本体を呼ぶ
 
 ### cmd の `for /f` はパイプをコンソールのコードページで読む
 
@@ -46,9 +46,9 @@ PowerShell のシムも同じ理由で `[Console]::OutputEncoding` を呼び出�
 
 ### シムには本体 exe の絶対パスを埋める
 
-`navkit init` は `current_exe()` の場所を出力に埋める。PATH に依存しないので、
+`thither init` は `current_exe()` の場所を出力に埋める。PATH に依存しないので、
 cargo build したままの target/release からでも試せる。cmd のシムは自分のフォルダ(`%~dp0`)と exe のフォルダを
-この順で PATH の先頭に足し、`for /f` の中では `navkit` と裸の名前で呼ぶ(引用符付きのフルパスは上記の理由で壊れる)。
+この順で PATH の先頭に足し、`for /f` の中では `thither` と裸の名前で呼ぶ(引用符付きのフルパスは上記の理由で壊れる)。
 自分のフォルダを先にするのは、リリースの zip(exe + .cmd 4 本)を PATH のフォルダに展開するだけで動かすため。
 
 ### エイリアスは関数より優先される(PowerShell)
@@ -99,7 +99,7 @@ UI は最初から自前(fzf を呼ばない)。理由: 将来「履歴 / 配下
 ## 関連する既存設定
 
 - PowerShell プロファイル: `C:\Users\takay\OneDrive\ドキュメント\PowerShell\Microsoft.PowerShell_profile.ps1`
-  (fd/fzf/rg の `fs` 系ツール、zoxide init、navkit.ps1 の読み込み、WezTerm 向け OSC 7 出力)
+  (fd/fzf/rg の `fs` 系ツール、zoxide init、`thither init powershell` の読み込み、WezTerm 向け OSC 7 出力)
 - WezTerm 設定: https://github.com/Taka-S-dev/wezterm-config(`~/.wezterm.lua` はシンボリックリンク)
 - Neovim 設定: https://github.com/Taka-S-dev/nvim-config
 - バッチ版: `C:\Users\takay\navkit\`(c.cmd cf.cmd z.cmd zi.cmd tools.cmd navkit.ps1、bin\ に fd/fzf/zoxide の exe)

@@ -2,14 +2,14 @@
 
 ## コマンド
 
-### `navkit pick`
+### `thither pick`
 
 候補を TUI で絞り込み、選ばれたパスを標準出力に 1 行書いて終了する。
 
 | オプション | 既定 | 意味 |
 |---|---|---|
 | `--mode dirs\|files\|recent\|browse` | dirs | dirs: カレント配下のディレクトリ / files: ファイル(選ぶとその親ディレクトリを出力) / recent: zoxide の履歴 / browse: 1 階層ずつ歩く(下記) |
-| `--query <文字列>` | 空 | 初期絞り込み。環境変数 `NAVKIT_QUERY` があればそれを優先(cmd のシム用) |
+| `--query <文字列>` | 空 | 初期絞り込み。環境変数 `THITHER_QUERY` があればそれを優先(cmd のシム用) |
 | `--root <パス>` | カレント | 走査の起点 |
 | `--select-1` | off | 候補が 1 つなら画面を出さず即出力 |
 
@@ -18,17 +18,17 @@
 除外(dirs / files): `.git` `node_modules` `dist` `build` `target` と設定ファイルの `exclude`。
 .gitignore は無視する(fd の `--no-ignore` 相当)。ビルド成果物も移動先になりうるため。
 
-### `navkit init <shell>`
+### `thither init <shell>`
 
 シェル用のシム定義を標準出力に書く。
 
 | shell | 出力 |
 |---|---|
 | powershell | 関数 `c` `cf` `z` `zi` の定義。zoxide の同名エイリアスを先に外す。選択後に `zoxide add`。`--out <dir>` なら `c.ps1` `cf.ps1` `z.ps1` `zi.ps1` をファイルで書き出す(PATH に置けばプロファイル不要。ただし zoxide のエイリアスが `z` `zi` に優先する) |
-| cmd | `c.cmd` `cf.cmd` `z.cmd` `zi.cmd` の内容(`--out <dir>` でファイル書き出し)。引数を `NAVKIT_QUERY` に入れて本体を呼ぶ |
-| bash | 同名の関数定義(zsh でも同じ)。`eval "$(navkit init bash)"` で読む。`--out` は無い(関数でないと cd できない) |
+| cmd | `c.cmd` `cf.cmd` `z.cmd` `zi.cmd` の内容(`--out <dir>` でファイル書き出し)。引数を `THITHER_QUERY` に入れて本体を呼ぶ |
+| bash | 同名の関数定義(zsh でも同じ)。`eval "$(thither init bash)"` で読む。`--out` は無い(関数でないと cd できない) |
 
-`--out` で書いた .cmd と .ps1 は、まず自分と同じフォルダの navkit.exe を使い、無ければ生成時の exe を使う。
+`--out` で書いた .cmd と .ps1 は、まず自分と同じフォルダの thither.exe を使い、無ければ生成時の exe を使う。
 リリースの zip はこの 8 本と exe を同梱する。
 
 シムの動作は 3 つとも同じ: 本体を呼ぶ → 出力があれば cd → `zoxide add` → 終了コードを返す。
@@ -107,7 +107,7 @@ browse で降りた場所が次に Tab で戻ったときの起点になる。
 
 ## 設定ファイル
 
-`%APPDATA%\navkit\config.toml`(Windows)/ `~/.config/navkit/config.toml`。無くても動く。
+`%APPDATA%\thither\config.toml`(Windows)/ `~/.config/thither/config.toml`。無くても動く。
 
 ```toml
 # 走査から外すディレクトリ名(どの階層でも)

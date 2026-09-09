@@ -868,21 +868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "navkit"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "directories",
- "ignore",
- "nucleo",
- "ratatui",
- "serde",
- "toml",
- "unicode-width",
-]
-
-[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1705,6 +1690,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "thither"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "directories",
+ "ignore",
+ "nucleo",
+ "ratatui",
+ "serde",
+ "toml",
+ "unicode-width",
 ]
 
 [[package]]

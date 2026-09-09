@@ -26,10 +26,10 @@ impl Default for Config {
 }
 
 impl Config {
-    /// `%APPDATA%\navkit\config.toml` on Windows, `~/.config/navkit/config.toml` elsewhere.
+    /// `%APPDATA%\thither\config.toml` on Windows, `~/.config/thither/config.toml` elsewhere.
     pub fn path() -> Option<PathBuf> {
         let base = directories::BaseDirs::new()?;
-        Some(base.config_dir().join("navkit").join("config.toml"))
+        Some(base.config_dir().join("thither").join("config.toml"))
     }
 
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
