@@ -163,7 +163,8 @@ mod tests {
 
     #[test]
     fn favorites_persist_without_duplicates_and_stale_entries_can_be_removed() {
-        let root = std::env::temp_dir().join(format!("thither-favorites-{}", std::process::id()));
+        let root =
+            crate::testing::temp_dir().join(format!("thither-favorites-{}", std::process::id()));
         fs::create_dir_all(root.join("日本語 folder")).unwrap();
         let file = root.join("favorites.toml");
         let directory = root.join("日本語 folder");

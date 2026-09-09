@@ -613,8 +613,8 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("thither-action-{}-{nonce}", std::process::id()));
+            let root = crate::testing::temp_dir()
+                .join(format!("thither-action-{}-{nonce}", std::process::id()));
             fs::create_dir(&root).unwrap();
             Self(root)
         }
@@ -634,7 +634,7 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            assert_eq!(self.0.parent(), Some(std::env::temp_dir().as_path()));
+            assert_eq!(self.0.parent(), Some(crate::testing::temp_dir().as_path()));
             fs::remove_dir_all(&self.0).unwrap();
         }
     }

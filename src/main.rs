@@ -8,6 +8,8 @@ mod open;
 mod picker;
 mod scan;
 mod shim;
+#[cfg(test)]
+mod testing;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
