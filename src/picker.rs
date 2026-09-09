@@ -39,11 +39,17 @@ const MODE_ORDER: [Mode; 3] = [Mode::Dirs, Mode::Files, Mode::Recent];
 /// Sources are created the first time a mode is shown and kept, so switching
 /// back with Tab is instant.
 struct Source {
+    mode: Mode,
     matcher: Nucleo<Entry>,
     scan_done: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     scanner: Option<JoinHandle<()>>,
     selected: u32,
+    query_empty: bool,
+    /// Item indices in browse order (shallow paths first, then by name), built
+    /// once the scan has finished. With no query nucleo lists items in the order
+    /// the parallel walk found them, which is noise to a reader.
+    browse_order: Option<Vec<u32>>,
 }
 
 impl Source {
@@ -60,11 +66,50 @@ impl Source {
             cancel.clone(),
         );
         Self {
+            mode,
             matcher,
             scan_done,
             cancel,
             scanner: Some(scanner),
             selected: 0,
+            query_empty: true,
+            browse_order: None,
+        }
+    }
+
+    /// Browse order applies to scanned modes with an empty query. zoxide's own
+    /// order (by score) is the point of recent mode, so it is left alone.
+    fn browsing(&self) -> bool {
+        self.query_empty && self.mode != Mode::Recent
+    }
+
+    /// Builds the browse order once every scanned item is in the snapshot.
+    fn refresh_browse_order(&mut self) {
+        if self.browse_order.is_some() || !self.scan_done.load(Ordering::Acquire) {
+            return;
+        }
+        let snapshot = self.matcher.snapshot();
+        if snapshot.item_count() != self.matcher.injector().injected_items() {
+            return;
+        }
+        let mut order: Vec<u32> = (0..snapshot.item_count()).collect();
+        order.sort_by_cached_key(|&i| {
+            let display = snapshot
+                .get_item(i)
+                .map(|item| item.data.display.as_str())
+                .unwrap_or_default();
+            let depth = display.matches(std::path::MAIN_SEPARATOR).count();
+            (depth, display.to_lowercase())
+        });
+        self.browse_order = Some(order);
+    }
+
+    /// The nth row as shown: browse order when browsing, nucleo's ranking otherwise.
+    fn visible(&self, n: u32) -> Option<nucleo::Item<'_, Entry>> {
+        let snapshot = self.matcher.snapshot();
+        match (&self.browse_order, self.browsing()) {
+            (Some(order), true) => snapshot.get_item(*order.get(n as usize)?),
+            _ => snapshot.get_matched_item(n),
         }
     }
 
@@ -72,11 +117,12 @@ impl Source {
         self.matcher
             .pattern
             .reparse(0, query, CaseMatching::Ignore, Normalization::Smart, append);
+        self.query_empty = query.is_empty();
         self.selected = 0;
     }
 
     fn selected_entry(&self) -> Option<Entry> {
-        let item = self.matcher.snapshot().get_matched_item(self.selected)?;
+        let item = self.visible(self.selected)?;
         Some(Entry {
             path: item.data.path.clone(),
             display: item.data.display.clone(),
@@ -208,14 +254,20 @@ impl Picker {
         loop {
             let source = self.source();
             source.matcher.tick(TICK_MS);
+            source.refresh_browse_order();
             source.clamp_selection();
             terminal.draw(|frame| self.render(frame.area(), frame))?;
 
             if !event::poll(POLL)? {
                 continue;
             }
-            let Event::Key(key) = event::read()? else {
-                continue;
+            let key = match event::read()? {
+                Event::Key(key) => key,
+                Event::Resize(_, rows) => {
+                    terminal.reopen(rows)?;
+                    continue;
+                }
+                _ => continue,
             };
             if key.kind == KeyEventKind::Release {
                 continue;
@@ -380,11 +432,9 @@ impl Picker {
         let last = (first + height).min(count);
         let pattern = snapshot.pattern().column_pattern(0);
         let mut indices = Vec::new();
-        let items: Vec<ListItem> = snapshot
-            .matched_items(first..last)
-            .enumerate()
-            .map(|(i, item)| {
-                let idx = first + i as u32;
+        let items: Vec<ListItem> = (first..last)
+            .filter_map(|idx| source.visible(idx).map(|item| (idx, item)))
+            .map(|(idx, item)| {
                 indices.clear();
                 pattern.indices(
                     item.matcher_columns[0].slice(..),
@@ -549,21 +599,38 @@ impl TerminalGuard {
     fn enter() -> Result<Self, Error> {
         let (_, rows) = crossterm::terminal::size()?;
         let (_, cursor_row) = crossterm::cursor::position().unwrap_or((0, rows));
-        let height = inline_height(rows, cursor_row);
         enable_raw_mode()?;
+        match Self::open(rows, cursor_row) {
+            Ok(terminal) => Ok(Self { terminal }),
+            Err(err) => {
+                let _ = disable_raw_mode();
+                Err(err)
+            }
+        }
+    }
+
+    /// Creates an inline viewport starting at `top`, sized for a `rows`-tall screen.
+    fn open(rows: u16, top: u16) -> Result<Terminal<CrosstermBackend<io::Stderr>>, Error> {
+        let height = inline_height(rows, top);
         let terminal = Terminal::with_options(
             CrosstermBackend::new(io::stderr()),
             TerminalOptions {
                 viewport: Viewport::Inline(height),
             },
-        );
-        match terminal {
-            Ok(terminal) => Ok(Self { terminal }),
-            Err(err) => {
-                let _ = disable_raw_mode();
-                Err(err.into())
-            }
-        }
+        )?;
+        Ok(terminal)
+    }
+
+    /// Rebuilds the viewport after the window changed size. An inline viewport's
+    /// height is fixed when it is created, so growing the window would otherwise
+    /// leave the extra rows unused, and shrinking it would draw off screen.
+    fn reopen(&mut self, rows: u16) -> Result<(), Error> {
+        let top = self.terminal.get_frame().area().y;
+        let top = top.min(rows.saturating_sub(1));
+        self.terminal.clear()?;
+        crossterm::execute!(io::stderr(), crossterm::cursor::MoveTo(0, top))?;
+        self.terminal = Self::open(rows, top)?;
+        Ok(())
     }
 }
 
