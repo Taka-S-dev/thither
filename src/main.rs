@@ -1,6 +1,7 @@
 mod config;
 mod picker;
 mod scan;
+mod shim;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,6 +24,9 @@ enum Command {
     Init {
         #[arg(value_enum)]
         shell: Shell,
+        /// For cmd: write c.cmd cf.cmd z.cmd zi.cmd into this directory instead of printing them.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
     },
 }
 
@@ -69,21 +73,31 @@ enum Shell {
     Bash,
 }
 
+enum Outcome {
+    Path(PathBuf),
+    Cancelled,
+    Done,
+}
+
 const EXIT_CANCELLED: u8 = 1;
 const EXIT_ERROR: u8 = 2;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Pick(args) => pick(args),
-        Command::Init { .. } => Err("init is not implemented yet".into()),
+        Command::Pick(args) => pick(args).map(|p| match p {
+            Some(path) => Outcome::Path(path),
+            None => Outcome::Cancelled,
+        }),
+        Command::Init { shell, out } => init(shell, out).map(|()| Outcome::Done),
     };
     match result {
-        Ok(Some(path)) => {
+        Ok(Outcome::Path(path)) => {
             println!("{}", path.display());
             ExitCode::SUCCESS
         }
-        Ok(None) => ExitCode::from(EXIT_CANCELLED),
+        Ok(Outcome::Done) => ExitCode::SUCCESS,
+        Ok(Outcome::Cancelled) => ExitCode::from(EXIT_CANCELLED),
         Err(err) => {
             eprintln!("navkit: {err}");
             ExitCode::from(EXIT_ERROR)
@@ -105,4 +119,25 @@ fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error
     }
     let config = config::Config::load()?;
     picker::run(args, root, config)
+}
+
+fn init(shell: Shell, out: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    match shell {
+        Shell::Powershell => print!("{}", shim::powershell()?),
+        Shell::Cmd => match out {
+            Some(dir) => {
+                for path in shim::write_cmd(&dir)? {
+                    eprintln!("wrote {}", path.display());
+                }
+            }
+            None => {
+                for (name, body) in shim::cmd()? {
+                    println!("rem ===== {name}");
+                    print!("{body}");
+                }
+            }
+        },
+        Shell::Bash => return Err("init bash is not implemented yet".into()),
+    }
+    Ok(())
 }
