@@ -95,9 +95,6 @@ fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error
     if let Ok(query) = std::env::var("NAVKIT_QUERY") {
         args.query = query;
     }
-    if args.mode == Mode::Recent {
-        return Err("--mode recent is not implemented yet".into());
-    }
     let root = match args.root.take() {
         Some(root) => root,
         None => std::env::current_dir()?,

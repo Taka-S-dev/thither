@@ -45,6 +45,10 @@ enum Action {
 }
 
 pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathBuf>, Error> {
+    if args.mode == Mode::Recent {
+        // Fail with a message now rather than showing an empty picker.
+        scan::recent()?;
+    }
     let matcher = Nucleo::new(MatchConfig::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
     let scan_done = Arc::new(AtomicBool::new(false));
     let mut scanner = Some(scan::spawn(
@@ -197,7 +201,10 @@ impl Picker {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" [{}] {} ", self.mode.label(), self.root.display()))
+            .title(match self.mode {
+                Mode::Recent => format!(" [{}] zoxide ", self.mode.label()),
+                _ => format!(" [{}] {} ", self.mode.label(), self.root.display()),
+            })
             .title_top(Line::from(format!(" {count}/{total}{scanning} ")).right_aligned())
             .title_bottom(" Enter: cd  Esc: cancel ");
         let inner = block.inner(area);

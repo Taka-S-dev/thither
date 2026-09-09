@@ -26,6 +26,12 @@ pub fn spawn(
     injector: Injector<Entry>,
     done: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
+    if mode == Mode::Recent {
+        return std::thread::spawn(move || {
+            push_recent(&injector);
+            done.store(true, Ordering::Release);
+        });
+    }
     let exclude: Arc<HashSet<OsString>> = Arc::new(exclude.iter().map(OsString::from).collect());
     std::thread::spawn(move || {
         let mut builder = WalkBuilder::new(&root);
@@ -76,4 +82,34 @@ fn to_entry(root: &Path, entry: &DirEntry, mode: Mode) -> Option<Entry> {
         path: entry.path().to_path_buf(),
         display,
     })
+}
+
+/// Recent directories in zoxide's order (highest score first). zoxide owns the
+/// history; reading its database directly would tie navkit to its file format.
+pub fn recent() -> Result<Vec<PathBuf>, String> {
+    let output = std::process::Command::new("zoxide")
+        .args(["query", "--list"])
+        .output()
+        .map_err(|err| format!("cannot run zoxide: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "zoxide query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn push_recent(injector: &Injector<Entry>) {
+    let Ok(paths) = recent() else { return };
+    for path in paths {
+        let display = path.to_string_lossy().into_owned();
+        injector.push(Entry { path, display }, |item, cols| {
+            cols[0] = item.display.as_str().into()
+        });
+    }
 }
