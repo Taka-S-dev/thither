@@ -8,7 +8,7 @@
 
 | オプション | 既定 | 意味 |
 |---|---|---|
-| `--mode dirs\|files\|recent` | dirs | dirs: カレント配下のディレクトリ / files: ファイル(選ぶとその親ディレクトリを出力) / recent: zoxide の履歴 |
+| `--mode dirs\|files\|recent\|browse` | dirs | dirs: カレント配下のディレクトリ / files: ファイル(選ぶとその親ディレクトリを出力) / recent: zoxide の履歴 / browse: 1 階層ずつ歩く(下記) |
 | `--query <文字列>` | 空 | 初期絞り込み。環境変数 `NAVKIT_QUERY` があればそれを優先(cmd のシム用) |
 | `--root <パス>` | カレント | 走査の起点 |
 | `--select-1` | off | 候補が 1 つなら画面を出さず即出力 |
@@ -62,7 +62,36 @@ files モードでは親ディレクトリの中身を出す。幅 80 桁未満�
 | Up/Down, Ctrl-K/Ctrl-J | 候補移動 |
 | Enter | 決定 |
 | Esc, Ctrl-C | キャンセル(終了コード 1) |
-| Tab / Shift-Tab | モード切替 dirs → files → recent → dirs(Shift-Tab は逆順)。クエリは引き継ぎ、各モードの走査結果は保持 |
+| Tab / Shift-Tab | モード切替 dirs → files → recent → browse → dirs(Shift-Tab は逆順)。クエリは引き継ぎ、各モードの走査結果は保持 |
+
+### browse モード
+
+yazi と同じ 3 列(親 | 今の階層 | 選択先の中身)で 1 階層ずつ歩く。「名前を知らないので見て回りたい」ときの画面。
+絞り込みの画面と起点を共有する: dirs / files / recent で選んでいたフォルダから歩き始め、
+browse で降りた場所が次に Tab で戻ったときの起点になる。
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ > █                                                                          │
+│   8/8 ───────────────────────────────────────────────────────────────────────│
+│ [dirs|files|recent|browse] C:\Users\takay\folder\work\C\openssl-1.1.1q       │
+│   Libcurl\        │ ▌ apps\                     │  aes\                      │
+│   linux\          │   crypto\                   │  bn\                       │
+│ ▌ openssl-1.1.1q\ │   doc\                      │  build.info                │
+│   postgres\       │   CHANGES                   │                            │
+╰────────────────────── Left: up  Right: enter  Tab: mode  Enter: cd  Esc: cancel ╯
+```
+
+| キー | 動作 |
+|---|---|
+| 文字入力 | 今の階層の中だけを絞り込み(nucleo、大小無視)。階層を移ると消える |
+| Right, Ctrl-L | 選択中のフォルダに入る(ファイルなら何もしない) |
+| Left, Ctrl-H | 親へ。出てきたフォルダを選択した状態に戻す |
+| Backspace | 絞り込みがあれば 1 文字消す。無ければ親へ(yazi と同じ) |
+| Up/Down, Ctrl-K/Ctrl-J, PageUp/PageDown | 候補移動 |
+| Enter | 選択中のフォルダに cd。ファイルを選んでいれば今の階層に cd |
+
+1 階層で読むのは最大 20,000 件。それ以上あるフォルダは切り詰める。
 
 表示は起点からの相対パスで、区切りは OS のもの。一致した文字は色付き(fzf と同じ)。出力は絶対パスで末尾区切りなし。
 

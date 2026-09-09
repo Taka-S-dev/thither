@@ -1,3 +1,4 @@
+mod browse;
 mod config;
 mod picker;
 mod scan;
@@ -55,6 +56,8 @@ pub enum Mode {
     Files,
     /// Recently visited directories from zoxide.
     Recent,
+    /// Walk the tree one level at a time.
+    Browse,
 }
 
 impl Mode {
@@ -63,6 +66,7 @@ impl Mode {
             Mode::Dirs => "dirs",
             Mode::Files => "files",
             Mode::Recent => "recent",
+            Mode::Browse => "browse",
         }
     }
 }

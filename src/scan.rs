@@ -73,7 +73,7 @@ fn to_entry(root: &Path, entry: &DirEntry, mode: Mode) -> Option<Entry> {
     let wanted = match mode {
         Mode::Dirs => is_dir,
         Mode::Files => !is_dir,
-        Mode::Recent => false,
+        Mode::Recent | Mode::Browse => false,
     };
     if !wanted {
         return None;

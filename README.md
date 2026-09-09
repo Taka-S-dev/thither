@@ -50,3 +50,6 @@ eval "$(navkit init bash)"
 | `cf [query]` | ファイルを選んでその親ディレクトリに cd |
 | `z <keywords>` | zoxide の履歴から一致する 1 件に cd(引数なしでホーム) |
 | `zi [query]` | zoxide の履歴を一覧から選んで cd |
+
+画面の中では Tab でモードが dirs → files → recent → browse と切り替わる。
+browse は yazi 風に 1 階層ずつ歩く画面で、Right で入り、Left で親へ戻る。

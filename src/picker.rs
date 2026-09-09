@@ -16,6 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
+use crate::browse::{self, Browser};
 use crate::config::Config;
 use crate::scan::{self, Entry};
 use crate::{Mode, PickArgs};
@@ -33,7 +34,7 @@ const INLINE_MIN_HEIGHT: u16 = 12;
 /// Directory entries read for the preview. Enough to fill any pane; bounds the cost on huge folders.
 const PREVIEW_LIMIT: usize = 500;
 
-const MODE_ORDER: [Mode; 3] = [Mode::Dirs, Mode::Files, Mode::Recent];
+const MODE_ORDER: [Mode; 4] = [Mode::Dirs, Mode::Files, Mode::Recent, Mode::Browse];
 
 /// One mode's candidates: its matcher and the scan that feeds it.
 /// Sources are created the first time a mode is shown and kept, so switching
@@ -149,7 +150,10 @@ impl Drop for Source {
 }
 
 struct Picker {
-    sources: [Option<Source>; 3],
+    /// One per scanned mode (dirs, files, recent). The browse slot stays empty.
+    sources: [Option<Source>; 4],
+    /// State of browse mode, created when the mode is first shown.
+    browser: Option<Browser>,
     mode: Mode,
     query: String,
     root: PathBuf,
@@ -174,7 +178,8 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
         scan::recent()?;
     }
     let mut picker = Picker {
-        sources: [None, None, None],
+        sources: [None, None, None, None],
+        browser: (args.mode == Mode::Browse).then(|| Browser::new(root.clone())),
         mode: args.mode,
         query: String::new(),
         root,
@@ -185,7 +190,7 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
     };
     picker.set_query(&args.query);
 
-    if args.select_1 {
+    if args.select_1 && args.mode != Mode::Browse {
         let source = picker.source();
         if let Some(handle) = source.scanner.take() {
             handle.join().map_err(|_| "scan thread panicked")?;
@@ -236,26 +241,67 @@ impl Picker {
     }
 
     fn set_query(&mut self, query: &str) {
+        if self.mode == Mode::Browse {
+            self.browser().set_filter(query);
+            return;
+        }
         let append = query.starts_with(&self.query);
         self.query = query.to_string();
         let q = self.query.clone();
         self.source().set_query(&q, append);
     }
 
+    fn browser(&mut self) -> &mut Browser {
+        let root = self.root.clone();
+        self.browser.get_or_insert_with(|| Browser::new(root))
+    }
+
+    /// Moves the scan root. Every scanned mode restarts from the new place.
+    fn set_root(&mut self, root: PathBuf) {
+        if root == self.root {
+            return;
+        }
+        self.root = root;
+        self.sources = [None, None, None, None];
+        self.preview = None;
+    }
+
+    /// Tab order is dirs, files, recent, browse. Browse mode starts from the
+    /// directory selected in the previous mode, and the scanned modes pick up
+    /// wherever browsing ended, so the two ways of looking share one place.
     fn switch_mode(&mut self, step: isize) {
-        let idx = mode_index(self.mode) as isize + step;
+        let leaving = self.mode;
+        let idx = mode_index(leaving) as isize + step;
         let len = MODE_ORDER.len() as isize;
-        self.mode = MODE_ORDER[idx.rem_euclid(len) as usize];
-        self.source().selected = 0;
+        let entering = MODE_ORDER[idx.rem_euclid(len) as usize];
+
+        if leaving == Mode::Browse {
+            let cwd = self.browser().cwd.clone();
+            self.set_root(cwd);
+        }
+        self.mode = entering;
+        if entering == Mode::Browse {
+            let start = self.sources[mode_index(leaving)]
+                .as_ref()
+                .and_then(Source::selected_entry)
+                .map(|e| output_path(&e, leaving))
+                .filter(|p| p.is_dir())
+                .unwrap_or_else(|| self.root.clone());
+            self.browser = Some(Browser::new(start));
+        } else {
+            self.source().selected = 0;
+        }
     }
 
     fn run_tui(&mut self) -> Result<Option<Entry>, Error> {
         let mut terminal = TerminalGuard::enter()?;
         loop {
-            let source = self.source();
-            source.matcher.tick(TICK_MS);
-            source.refresh_browse_order();
-            source.clamp_selection();
+            if self.mode != Mode::Browse {
+                let source = self.source();
+                source.matcher.tick(TICK_MS);
+                source.refresh_browse_order();
+                source.clamp_selection();
+            }
             terminal.draw(|frame| self.render(frame.area(), frame))?;
 
             if !event::poll(POLL)? {
@@ -276,6 +322,11 @@ impl Picker {
                 Action::Continue => {}
                 Action::Cancel => return Ok(None),
                 Action::Accept => {
+                    if self.mode == Mode::Browse {
+                        let path = self.browser().target();
+                        let display = path.display().to_string();
+                        return Ok(Some(Entry { path, display }));
+                    }
                     if let Some(entry) = self.source().selected_entry() {
                         return Ok(Some(entry));
                     }
@@ -287,16 +338,22 @@ impl Picker {
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
-            (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => Action::Cancel,
-            (KeyCode::Enter, _) => Action::Accept,
+            (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => return Action::Cancel,
+            (KeyCode::Enter, _) => return Action::Accept,
             (KeyCode::Tab, _) => {
                 self.switch_mode(1);
-                Action::Continue
+                return Action::Continue;
             }
             (KeyCode::BackTab, _) => {
                 self.switch_mode(-1);
-                Action::Continue
+                return Action::Continue;
             }
+            _ => {}
+        }
+        if self.mode == Mode::Browse {
+            return self.handle_browse_key(key);
+        }
+        match (key.code, ctrl) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), true) => {
                 let s = self.source();
                 s.selected = s.selected.saturating_sub(1);
@@ -327,7 +384,42 @@ impl Picker {
         }
     }
 
+    fn handle_browse_key(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let b = self.browser();
+        match (key.code, ctrl) {
+            (KeyCode::Left, _) | (KeyCode::Char('h'), true) => b.up(),
+            (KeyCode::Right, _) | (KeyCode::Char('l'), true) => b.enter(),
+            (KeyCode::Up, _) | (KeyCode::Char('k'), true) => b.move_selection(-1),
+            (KeyCode::Down, _) | (KeyCode::Char('j'), true) => b.move_selection(1),
+            (KeyCode::PageUp, _) => b.move_selection(-10),
+            (KeyCode::PageDown, _) => b.move_selection(10),
+            // Backspace on an empty filter climbs, as in yazi.
+            (KeyCode::Backspace, _) => {
+                if b.filter.is_empty() {
+                    b.up();
+                } else {
+                    let mut f = b.filter.clone();
+                    f.pop();
+                    b.set_filter(&f);
+                }
+            }
+            (KeyCode::Char('u'), true) => b.set_filter(""),
+            (KeyCode::Char(c), false) => {
+                let mut f = b.filter.clone();
+                f.push(c);
+                b.set_filter(&f);
+            }
+            _ => {}
+        }
+        Action::Continue
+    }
+
     fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
+        if self.mode == Mode::Browse {
+            self.render_browse(area, frame);
+            return;
+        }
         let mode = self.mode;
         let show_preview = area.width >= MIN_WIDTH_FOR_PREVIEW;
         let [list_area, preview_area] = if show_preview {
@@ -345,25 +437,11 @@ impl Picker {
             self.render_preview(preview_area, frame, dir.as_deref());
         }
 
-        // Header: mode tabs, then where the candidates come from.
-        let mut header: Vec<Span> = vec![Span::styled("[", theme::HEADER)];
-        for (i, &m) in MODE_ORDER.iter().enumerate() {
-            if i > 0 {
-                header.push(Span::styled("|", theme::HEADER));
-            }
-            let style = if m == mode {
-                theme::HEADER.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                theme::HEADER
-            };
-            header.push(Span::styled(m.label(), style));
-        }
-        header.push(Span::styled("] ", theme::HEADER));
         let location = match mode {
             Mode::Recent => "zoxide".to_string(),
             _ => self.root.display().to_string(),
         };
-        header.push(Span::styled(location, theme::HEADER));
+        let header = header_line(mode, location);
 
         let source = self.sources[mode_index(mode)]
             .as_mut()
@@ -454,6 +532,150 @@ impl Picker {
         frame.render_widget(List::new(items), rows_area);
     }
 
+    /// Three columns like yazi: parent, current directory, selected entry's contents.
+    fn render_browse(&mut self, area: Rect, frame: &mut ratatui::Frame) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::BORDER)
+            .title_bottom(
+                Line::from(Span::styled(
+                    " Left: up  Right: enter  Tab: mode  Enter: cd  Esc: cancel ",
+                    theme::BORDER,
+                ))
+                .right_aligned(),
+            );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let [prompt_area, info_area, header_area, columns_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(inner);
+
+        let root = self.root.clone();
+        let browser = self.browser.get_or_insert_with(|| Browser::new(root));
+        let filter = browser.filter.clone();
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled("> ", theme::PROMPT),
+            Span::raw(filter.as_str()),
+        ]));
+        frame.render_widget(prompt, prompt_area);
+        frame.set_cursor_position((
+            prompt_area.x + 2 + filter.chars().count() as u16,
+            prompt_area.y,
+        ));
+
+        let shown = browser.rows().len();
+        let total = browser.items().len();
+        let counts = format!("  {shown}/{total} ");
+        let rule_width = (info_area.width as usize).saturating_sub(counts.chars().count());
+        let info = Paragraph::new(Line::from(vec![
+            Span::styled(counts, theme::INFO),
+            Span::styled("─".repeat(rule_width), theme::BORDER),
+        ]));
+        frame.render_widget(info, info_area);
+        let header = header_line(Mode::Browse, browser.cwd.display().to_string());
+        frame.render_widget(Paragraph::new(Line::from(header)), header_area);
+
+        let [parent_area, sep1, current_area, sep2, preview_area] = Layout::horizontal([
+            Constraint::Percentage(25),
+            Constraint::Length(1),
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(columns_area);
+        for sep in [sep1, sep2] {
+            let bar: Vec<Line> = (0..sep.height)
+                .map(|_| Line::from(Span::styled("│", theme::BORDER)))
+                .collect();
+            frame.render_widget(Paragraph::new(bar), sep);
+        }
+
+        // Parent column: the directory we are in is marked.
+        if let Some((items, here)) = browser.parent_listing() {
+            let height = parent_area.height as usize;
+            let first = here
+                .unwrap_or(0)
+                .saturating_sub(height.saturating_sub(1))
+                .min(items.len().saturating_sub(height));
+            let rows: Vec<ListItem> = items
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(height)
+                .map(|(i, item)| {
+                    let current = Some(i) == here;
+                    let mut line = highlight_line(current, &item.label(), &[]);
+                    if current {
+                        line = line.style(theme::CURRENT);
+                    } else if item.is_dir {
+                        line = line.style(theme::DIR);
+                    }
+                    ListItem::new(line)
+                })
+                .collect();
+            frame.render_widget(List::new(rows), parent_area);
+        }
+
+        // Current column: filtered rows with match highlights.
+        let height = current_area.height as usize;
+        let selected = browser.selected;
+        let first = selected
+            .saturating_sub(height.saturating_sub(1))
+            .min(shown.saturating_sub(height));
+        let rows: Vec<ListItem> = browser
+            .rows()
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(height)
+            .map(|(i, row)| {
+                let item = &browser.items()[row.index];
+                let current = i == selected;
+                let label = item.label();
+                let mut line = highlight_line(current, &label, &row.hits);
+                if current {
+                    line = line.style(theme::CURRENT);
+                } else if item.is_dir {
+                    line = line.style(theme::DIR);
+                }
+                ListItem::new(line)
+            })
+            .collect();
+        frame.render_widget(List::new(rows), current_area);
+
+        // Preview column: contents of the selected directory.
+        let dir = browser.selected_path().filter(|p| p.is_dir());
+        if let Some(dir) = dir {
+            let cached = self.preview.as_ref().is_some_and(|(p, _)| p == &dir);
+            if !cached {
+                self.preview = Some((dir.clone(), list_dir(&dir)));
+            }
+            if let Some((_, names)) = &self.preview {
+                let rows: Vec<ListItem> = names
+                    .iter()
+                    .take(preview_area.height as usize)
+                    .map(|n| {
+                        let style = if n.ends_with(std::path::MAIN_SEPARATOR) {
+                            theme::DIR
+                        } else {
+                            Style::default()
+                        };
+                        ListItem::new(Line::from(Span::styled(format!(" {n}"), style)))
+                    })
+                    .collect();
+                frame.render_widget(List::new(rows), preview_area);
+            }
+        } else {
+            self.preview = None;
+        }
+    }
+
     /// Lists the directory the current selection would cd into.
     fn render_preview(&mut self, area: Rect, frame: &mut ratatui::Frame, dir: Option<&Path>) {
         let title = match dir {
@@ -501,26 +723,35 @@ impl Picker {
     }
 }
 
+/// `[dirs|files|recent|browse] <location>` with the active mode underlined.
+fn header_line(mode: Mode, location: String) -> Vec<Span<'static>> {
+    let mut header: Vec<Span> = vec![Span::styled("[", theme::HEADER)];
+    for (i, &m) in MODE_ORDER.iter().enumerate() {
+        if i > 0 {
+            header.push(Span::styled("|", theme::HEADER));
+        }
+        let style = if m == mode {
+            theme::HEADER.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            theme::HEADER
+        };
+        header.push(Span::styled(m.label(), style));
+    }
+    header.push(Span::styled("] ", theme::HEADER));
+    header.push(Span::styled(location, theme::HEADER));
+    header
+}
+
 /// Directory names first (with a trailing separator), then files, both sorted case-insensitively.
 fn list_dir(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    if std::fs::read_dir(dir).is_err() {
         return vec!["(unreadable)".to_string()];
-    };
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    for entry in entries.flatten().take(PREVIEW_LIMIT) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            dirs.push(format!("{name}{}", std::path::MAIN_SEPARATOR));
-        } else {
-            files.push(name);
-        }
     }
-    let key = |s: &String| s.to_lowercase();
-    dirs.sort_by_key(key);
-    files.sort_by_key(key);
-    dirs.extend(files);
-    dirs
+    browse::read_dir(dir)
+        .iter()
+        .take(PREVIEW_LIMIT)
+        .map(browse::Item::label)
+        .collect()
 }
 
 /// Colours from fzf's default dark theme, by 256-colour index, so the picker
@@ -534,6 +765,7 @@ mod theme {
     pub const HEADER: Style = Style::new().fg(Color::Indexed(109));
     pub const POINTER: Style = Style::new().fg(Color::Indexed(161));
     pub const MATCH: Style = Style::new().fg(Color::Indexed(108));
+    pub const DIR: Style = Style::new().fg(Color::Blue);
     pub const CURRENT: Style = Style::new()
         .fg(Color::Indexed(255))
         .bg(Color::Indexed(236))
@@ -545,7 +777,7 @@ const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 /// Builds one row, colouring the characters at `indices` (sorted, char positions).
 /// The current row gets fzf's pointer bar in the gutter.
-fn highlight_line<'a>(current: bool, text: &'a str, indices: &[u32]) -> Line<'a> {
+fn highlight_line(current: bool, text: &str, indices: &[u32]) -> Line<'static> {
     let matched = theme::MATCH;
     let pointer = if current {
         Span::styled("▌ ", theme::POINTER)
@@ -563,14 +795,14 @@ fn highlight_line<'a>(current: bool, text: &'a str, indices: &[u32]) -> Line<'a>
         }
         if hit != run_hit && byte > run_start {
             let style = if run_hit { matched } else { Style::default() };
-            spans.push(Span::styled(&text[run_start..byte], style));
+            spans.push(Span::styled(text[run_start..byte].to_string(), style));
             run_start = byte;
         }
         run_hit = hit;
     }
     if run_start < text.len() {
         let style = if run_hit { matched } else { Style::default() };
-        spans.push(Span::styled(&text[run_start..], style));
+        spans.push(Span::styled(text[run_start..].to_string(), style));
     }
     Line::from(spans)
 }
@@ -723,13 +955,14 @@ mod tests {
     #[test]
     fn mode_order_wraps_both_ways() {
         assert_eq!(mode_index(Mode::Dirs), 0);
-        assert_eq!(mode_index(Mode::Recent), 2);
+        assert_eq!(mode_index(Mode::Browse), 3);
         let next = |m: Mode, step: isize| {
             let i = mode_index(m) as isize + step;
             MODE_ORDER[i.rem_euclid(MODE_ORDER.len() as isize) as usize]
         };
-        assert_eq!(next(Mode::Recent, 1), Mode::Dirs);
-        assert_eq!(next(Mode::Dirs, -1), Mode::Recent);
+        assert_eq!(next(Mode::Recent, 1), Mode::Browse);
+        assert_eq!(next(Mode::Browse, 1), Mode::Dirs);
+        assert_eq!(next(Mode::Dirs, -1), Mode::Browse);
     }
 
     #[test]
