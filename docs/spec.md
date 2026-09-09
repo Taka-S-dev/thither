@@ -24,9 +24,12 @@
 
 | shell | 出力 |
 |---|---|
-| powershell | 関数 `c` `cf` `z` `zi` の定義。zoxide の同名エイリアスを先に外す。選択後に `zoxide add` |
+| powershell | 関数 `c` `cf` `z` `zi` の定義。zoxide の同名エイリアスを先に外す。選択後に `zoxide add`。`--out <dir>` なら `c.ps1` `cf.ps1` `z.ps1` `zi.ps1` をファイルで書き出す(PATH に置けばプロファイル不要。ただし zoxide のエイリアスが `z` `zi` に優先する) |
 | cmd | `c.cmd` `cf.cmd` `z.cmd` `zi.cmd` の内容(`--out <dir>` でファイル書き出し)。引数を `NAVKIT_QUERY` に入れて本体を呼ぶ |
-| bash | 同名の関数定義(zsh でも同じ)。`eval "$(navkit init bash)"` で読む |
+| bash | 同名の関数定義(zsh でも同じ)。`eval "$(navkit init bash)"` で読む。`--out` は無い(関数でないと cd できない) |
+
+`--out` で書いた .cmd と .ps1 は、まず自分と同じフォルダの navkit.exe を使い、無ければ生成時の exe を使う。
+リリースの zip はこの 8 本と exe を同梱する。
 
 シムの動作は 3 つとも同じ: 本体を呼ぶ → 出力があれば cd → `zoxide add` → 終了コードを返す。
 `z` だけは本体を呼ばず `zoxide query -- <keywords>` の結果に cd する(引数なしならホーム)。

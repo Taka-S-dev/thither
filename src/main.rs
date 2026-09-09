@@ -24,7 +24,8 @@ enum Command {
     Init {
         #[arg(value_enum)]
         shell: Shell,
-        /// For cmd: write c.cmd cf.cmd z.cmd zi.cmd into this directory instead of printing them.
+        /// Write c, cf, z and zi as script files (.cmd or .ps1) into this directory
+        /// instead of printing. A PATH folder holding them and navkit.exe needs no profile edit.
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
     },
@@ -122,22 +123,30 @@ fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error
 }
 
 fn init(shell: Shell, out: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    match shell {
-        Shell::Powershell => print!("{}", shim::powershell()?),
-        Shell::Cmd => match out {
-            Some(dir) => {
-                for path in shim::write_cmd(&dir)? {
-                    eprintln!("wrote {}", path.display());
-                }
+    let written = match (shell, out) {
+        (Shell::Powershell, None) => {
+            print!("{}", shim::powershell()?);
+            return Ok(());
+        }
+        (Shell::Powershell, Some(dir)) => shim::write_powershell(&dir)?,
+        (Shell::Cmd, None) => {
+            for (name, body) in shim::cmd()? {
+                println!("rem ===== {name}");
+                print!("{body}");
             }
-            None => {
-                for (name, body) in shim::cmd()? {
-                    println!("rem ===== {name}");
-                    print!("{body}");
-                }
-            }
-        },
-        Shell::Bash => print!("{}", shim::bash()?),
+            return Ok(());
+        }
+        (Shell::Cmd, Some(dir)) => shim::write_cmd(&dir)?,
+        (Shell::Bash, None) => {
+            print!("{}", shim::bash()?);
+            return Ok(());
+        }
+        (Shell::Bash, Some(_)) => {
+            return Err("bash needs functions, so use: eval \"$(navkit init bash)\"".into());
+        }
+    };
+    for path in written {
+        eprintln!("wrote {}", path.display());
     }
     Ok(())
 }
