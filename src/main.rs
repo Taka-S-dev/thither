@@ -1,5 +1,6 @@
 mod browse;
 mod config;
+mod open;
 mod picker;
 mod scan;
 mod shim;

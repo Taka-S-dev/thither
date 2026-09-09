@@ -63,6 +63,11 @@ files モードでは親ディレクトリの中身を出す。幅 80 桁未満�
 | Enter | 決定 |
 | Esc, Ctrl-C | キャンセル(終了コード 1) |
 | Tab / Shift-Tab | モード切替 dirs → files → recent → browse → dirs(Shift-Tab は逆順)。クエリは引き継ぎ、各モードの走査結果は保持 |
+| Ctrl-O | 選択中の項目を Explorer で開く(ファイルなら親フォルダを開いて選択状態)。画面は閉じない |
+| Ctrl-E | 選択中のファイルを関連付けで開く(フォルダなら何もしない)。画面は閉じない |
+
+Ctrl-O と Ctrl-E は全モード共通。Windows は explorer.exe、macOS は open、それ以外は xdg-open に渡す。
+これ以上の操作(コピー、削除、名前変更)は持たない。cd の道具に留める。
 
 ### browse モード
 

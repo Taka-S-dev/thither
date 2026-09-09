@@ -18,6 +18,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::browse::{self, Browser};
 use crate::config::Config;
+use crate::open;
 use crate::scan::{self, Entry};
 use crate::{Mode, PickArgs};
 
@@ -335,6 +336,16 @@ impl Picker {
         }
     }
 
+    /// The file or directory under the cursor, as is (files mode gives the
+    /// file, not its parent). Browse mode falls back to the directory shown.
+    fn selected_path(&mut self) -> Option<PathBuf> {
+        if self.mode == Mode::Browse {
+            let b = self.browser();
+            return Some(b.selected_path().unwrap_or_else(|| b.cwd.clone()));
+        }
+        self.source().selected_entry().map(|e| e.path)
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
@@ -346,6 +357,19 @@ impl Picker {
             }
             (KeyCode::BackTab, _) => {
                 self.switch_mode(-1);
+                return Action::Continue;
+            }
+            // Hand the selection to the desktop and stay open, as yazi does.
+            (KeyCode::Char('o'), true) => {
+                if let Some(path) = self.selected_path() {
+                    let _ = open::reveal(&path);
+                }
+                return Action::Continue;
+            }
+            (KeyCode::Char('e'), true) => {
+                if let Some(path) = self.selected_path() {
+                    let _ = open::launch(&path);
+                }
                 return Action::Continue;
             }
             _ => {}
@@ -457,7 +481,7 @@ impl Picker {
             .border_style(theme::BORDER)
             .title_bottom(
                 Line::from(Span::styled(
-                    " Tab: mode  Enter: cd  Esc: cancel ",
+                    " Tab: mode  ^O: explorer  ^E: open  Enter: cd  Esc: cancel ",
                     theme::BORDER,
                 ))
                 .right_aligned(),
@@ -540,7 +564,7 @@ impl Picker {
             .border_style(theme::BORDER)
             .title_bottom(
                 Line::from(Span::styled(
-                    " Left: up  Right: enter  Tab: mode  Enter: cd  Esc: cancel ",
+                    " Left: up  Right: enter  Tab: mode  ^O: explorer  ^E: open  Enter: cd  Esc: cancel ",
                     theme::BORDER,
                 ))
                 .right_aligned(),
