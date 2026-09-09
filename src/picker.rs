@@ -525,10 +525,17 @@ fn highlight_line<'a>(current: bool, text: &'a str, indices: &[u32]) -> Line<'a>
     Line::from(spans)
 }
 
-/// 40% of the screen, at least the minimum, never more than the screen has.
-fn inline_height(rows: u16) -> u16 {
-    let wanted = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
-    wanted.max(INLINE_MIN_HEIGHT).min(rows.max(1))
+/// Everything from the cursor row to the bottom of the screen, so a fresh
+/// window is filled instead of leaving the lower part empty. Near the bottom
+/// the picker still takes at least 40% (and the minimum), scrolling the
+/// history up as fzf --height does.
+fn inline_height(rows: u16, cursor_row: u16) -> u16 {
+    let below_cursor = rows.saturating_sub(cursor_row);
+    let floor = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
+    below_cursor
+        .max(floor)
+        .max(INLINE_MIN_HEIGHT)
+        .min(rows.max(1))
 }
 
 /// The picker draws on stderr so stdout stays clean for the selected path.
@@ -541,7 +548,8 @@ impl TerminalGuard {
     /// so the command history above stays visible.
     fn enter() -> Result<Self, Error> {
         let (_, rows) = crossterm::terminal::size()?;
-        let height = inline_height(rows);
+        let (_, cursor_row) = crossterm::cursor::position().unwrap_or((0, rows));
+        let height = inline_height(rows, cursor_row);
         enable_raw_mode()?;
         let terminal = Terminal::with_options(
             CrosstermBackend::new(io::stderr()),
@@ -636,11 +644,13 @@ mod tests {
     }
 
     #[test]
-    fn inline_height_fits_small_terminals() {
-        assert_eq!(inline_height(50), 20);
-        assert_eq!(inline_height(20), INLINE_MIN_HEIGHT);
-        assert_eq!(inline_height(10), 10);
-        assert_eq!(inline_height(0), 1);
+    fn inline_height_fills_the_space_below_the_cursor() {
+        assert_eq!(inline_height(50, 0), 50);
+        assert_eq!(inline_height(50, 10), 40);
+        assert_eq!(inline_height(50, 45), 20);
+        assert_eq!(inline_height(20, 19), INLINE_MIN_HEIGHT);
+        assert_eq!(inline_height(10, 9), 10);
+        assert_eq!(inline_height(0, 0), 1);
     }
 
     #[test]
