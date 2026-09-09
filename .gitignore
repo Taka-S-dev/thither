@@ -7,8 +7,6 @@
 !LICENSE
 !src/
 !src/**
-!docs/
-!docs/**
 !tests/
 !tests/**
 !.github/
@@ -16,6 +14,7 @@
 
 # 許可の後ろで再拒否(名前で指定)
 target/
+docs/
 CLAUDE.md
 .claude/
 .env
