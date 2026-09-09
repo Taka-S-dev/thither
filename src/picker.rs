@@ -6,17 +6,15 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use nucleo::pattern::{CaseMatching, Normalization};
 use nucleo::{Config as MatchConfig, Matcher, Nucleo};
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::config::Config;
 use crate::scan::{self, Entry};
@@ -29,6 +27,9 @@ const TICK_MS: u64 = 10;
 const POLL: Duration = Duration::from_millis(16);
 /// The preview pane is dropped below this terminal width.
 const MIN_WIDTH_FOR_PREVIEW: u16 = 80;
+/// Share of the screen the inline picker takes, as fzf --height 40%.
+const INLINE_HEIGHT_PERCENT: u32 = 40;
+const INLINE_MIN_HEIGHT: u16 = 12;
 /// Directory entries read for the preview. Enough to fill any pane; bounds the cost on huge folders.
 const PREVIEW_LIMIT: usize = 500;
 
@@ -111,6 +112,8 @@ struct Picker {
     highlighter: Matcher,
     /// Directory listing shown on the right, keyed by the path it was read from.
     preview: Option<(PathBuf, Vec<String>)>,
+    /// Drives the spinner.
+    frame_count: u32,
 }
 
 enum Action {
@@ -132,6 +135,7 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
         config,
         highlighter: Matcher::new(MatchConfig::DEFAULT.match_paths()),
         preview: None,
+        frame_count: 0,
     };
     picker.set_query(&args.query);
 
@@ -289,26 +293,25 @@ impl Picker {
             self.render_preview(preview_area, frame, dir.as_deref());
         }
 
-        let mut title: Vec<Span> = MODE_ORDER
-            .iter()
-            .flat_map(|&m| {
-                let style = if m == mode {
-                    Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                [
-                    Span::styled(format!(" {} ", m.label()), style),
-                    Span::raw(" "),
-                ]
-            })
-            .collect();
+        // Header: mode tabs, then where the candidates come from.
+        let mut header: Vec<Span> = vec![Span::styled("[", theme::HEADER)];
+        for (i, &m) in MODE_ORDER.iter().enumerate() {
+            if i > 0 {
+                header.push(Span::styled("|", theme::HEADER));
+            }
+            let style = if m == mode {
+                theme::HEADER.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                theme::HEADER
+            };
+            header.push(Span::styled(m.label(), style));
+        }
+        header.push(Span::styled("] ", theme::HEADER));
         let location = match mode {
             Mode::Recent => "zoxide".to_string(),
             _ => self.root.display().to_string(),
         };
-        title.push(Span::raw(location));
-        title.push(Span::raw(" "));
+        header.push(Span::styled(location, theme::HEADER));
 
         let source = self.sources[mode_index(mode)]
             .as_mut()
@@ -316,25 +319,33 @@ impl Picker {
         let snapshot = source.matcher.snapshot();
         let count = snapshot.matched_item_count();
         let total = snapshot.item_count();
-        let scanning = if source.scan_done.load(Ordering::Acquire) {
-            ""
-        } else {
-            " scanning"
-        };
+        let scanning = !source.scan_done.load(Ordering::Acquire);
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Line::from(title))
-            .title_top(Line::from(format!(" {count}/{total}{scanning} ")).right_aligned())
-            .title_bottom(" Tab: mode  Enter: cd  Esc: cancel ");
+            .border_type(BorderType::Rounded)
+            .border_style(theme::BORDER)
+            .title_bottom(
+                Line::from(Span::styled(
+                    " Tab: mode  Enter: cd  Esc: cancel ",
+                    theme::BORDER,
+                ))
+                .right_aligned(),
+            );
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
 
-        let [prompt_area, rows_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+        // Same vertical order as fzf --layout=reverse: prompt, info, header, list.
+        let [prompt_area, info_area, header_area, rows_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .areas(inner);
 
         let prompt = Paragraph::new(Line::from(vec![
-            Span::styled("> ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("> ", theme::PROMPT),
             Span::raw(&self.query),
         ]));
         frame.render_widget(prompt, prompt_area);
@@ -342,6 +353,21 @@ impl Picker {
             prompt_area.x + 2 + self.query.chars().count() as u16,
             prompt_area.y,
         ));
+
+        let spinner = if scanning {
+            self.frame_count = self.frame_count.wrapping_add(1);
+            SPINNER[(self.frame_count / 4) as usize % SPINNER.len()]
+        } else {
+            ' '
+        };
+        let counts = format!("{spinner} {count}/{total} ");
+        let rule_width = (info_area.width as usize).saturating_sub(counts.chars().count());
+        let info = Paragraph::new(Line::from(vec![
+            Span::styled(counts, theme::INFO),
+            Span::styled("─".repeat(rule_width), theme::BORDER),
+        ]));
+        frame.render_widget(info, info_area);
+        frame.render_widget(Paragraph::new(Line::from(header)), header_area);
 
         let height = rows_area.height as u32;
         if height == 0 || count == 0 {
@@ -367,10 +393,10 @@ impl Picker {
                 );
                 indices.sort_unstable();
                 indices.dedup();
-                let marker = if idx == selected { "> " } else { "  " };
-                let mut line = highlight_line(marker, &item.data.display, &indices);
-                if idx == selected {
-                    line = line.style(Style::default().add_modifier(Modifier::REVERSED));
+                let current = idx == selected;
+                let mut line = highlight_line(current, &item.data.display, &indices);
+                if current {
+                    line = line.style(theme::CURRENT);
                 }
                 ListItem::new(line)
             })
@@ -388,7 +414,11 @@ impl Picker {
             }
             None => String::new(),
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::BORDER)
+            .title(Span::styled(title, theme::HEADER));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -443,12 +473,36 @@ fn list_dir(dir: &Path) -> Vec<String> {
     dirs
 }
 
-/// Builds one row, colouring the characters at `indices` (sorted, char positions).
-fn highlight_line<'a>(marker: &'a str, text: &'a str, indices: &[u32]) -> Line<'a> {
-    let matched = Style::default()
-        .fg(Color::Cyan)
+/// Colours from fzf's default dark theme, by 256-colour index, so the picker
+/// looks like the fzf-based commands it replaces.
+mod theme {
+    use ratatui::style::{Color, Modifier, Style};
+
+    pub const BORDER: Style = Style::new().fg(Color::Indexed(240));
+    pub const PROMPT: Style = Style::new().fg(Color::Indexed(110));
+    pub const INFO: Style = Style::new().fg(Color::Indexed(144));
+    pub const HEADER: Style = Style::new().fg(Color::Indexed(109));
+    pub const POINTER: Style = Style::new().fg(Color::Indexed(161));
+    pub const MATCH: Style = Style::new().fg(Color::Indexed(108));
+    pub const CURRENT: Style = Style::new()
+        .fg(Color::Indexed(255))
+        .bg(Color::Indexed(236))
         .add_modifier(Modifier::BOLD);
-    let mut spans = vec![Span::raw(marker)];
+}
+
+/// Shown next to the counts while a scan is still feeding the list.
+const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+
+/// Builds one row, colouring the characters at `indices` (sorted, char positions).
+/// The current row gets fzf's pointer bar in the gutter.
+fn highlight_line<'a>(current: bool, text: &'a str, indices: &[u32]) -> Line<'a> {
+    let matched = theme::MATCH;
+    let pointer = if current {
+        Span::styled("▌ ", theme::POINTER)
+    } else {
+        Span::raw("  ")
+    };
+    let mut spans = vec![pointer];
     let mut next = indices.iter().peekable();
     let mut run_start = 0;
     let mut run_hit = false;
@@ -477,15 +531,26 @@ struct TerminalGuard {
 }
 
 impl TerminalGuard {
+    /// Opens an inline viewport at the bottom of the screen, like fzf --height,
+    /// so the command history above stays visible.
     fn enter() -> Result<Self, Error> {
+        let (_, rows) = crossterm::terminal::size()?;
+        let height = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
+        let height = height.clamp(INLINE_MIN_HEIGHT, rows.max(1));
         enable_raw_mode()?;
-        let mut stderr = io::stderr();
-        if let Err(err) = crossterm::execute!(stderr, EnterAlternateScreen) {
-            let _ = disable_raw_mode();
-            return Err(err.into());
+        let terminal = Terminal::with_options(
+            CrosstermBackend::new(io::stderr()),
+            TerminalOptions {
+                viewport: Viewport::Inline(height),
+            },
+        );
+        match terminal {
+            Ok(terminal) => Ok(Self { terminal }),
+            Err(err) => {
+                let _ = disable_raw_mode();
+                Err(err.into())
+            }
         }
-        let terminal = Terminal::new(CrosstermBackend::new(stderr))?;
-        Ok(Self { terminal })
     }
 }
 
@@ -504,8 +569,9 @@ impl std::ops::DerefMut for TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        // Wipe the viewport so the prompt comes back where the picker opened.
+        let _ = self.terminal.clear();
         let _ = disable_raw_mode();
-        let _ = crossterm::execute!(io::stderr(), LeaveAlternateScreen);
         let _ = io::stderr().flush();
     }
 }
@@ -517,17 +583,22 @@ mod tests {
     fn pieces(line: &Line) -> Vec<(String, bool)> {
         line.spans
             .iter()
-            .map(|s| (s.content.to_string(), s.style.fg == Some(Color::Cyan)))
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style.fg == Some(Color::Indexed(108)),
+                )
+            })
             .collect()
     }
 
     #[test]
     fn highlights_runs_of_matched_chars() {
-        let line = highlight_line("> ", "openssl", &[0, 1, 2]);
+        let line = highlight_line(true, "openssl", &[0, 1, 2]);
         assert_eq!(
             pieces(&line),
             vec![
-                ("> ".into(), false),
+                ("▌ ".into(), false),
                 ("ope".into(), true),
                 ("nssl".into(), false)
             ]
@@ -536,7 +607,7 @@ mod tests {
 
     #[test]
     fn highlights_scattered_and_multibyte_chars() {
-        let line = highlight_line("  ", r"ドキュメント\src", &[1, 7]);
+        let line = highlight_line(false, r"ドキュメント\src", &[1, 7]);
         assert_eq!(
             pieces(&line),
             vec![
@@ -552,7 +623,7 @@ mod tests {
 
     #[test]
     fn no_indices_means_plain_text() {
-        let line = highlight_line("  ", "docs", &[]);
+        let line = highlight_line(false, "docs", &[]);
         assert_eq!(
             pieces(&line),
             vec![("  ".into(), false), ("docs".into(), false)]
