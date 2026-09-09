@@ -11,6 +11,8 @@
 !docs/**
 !tests/
 !tests/**
+!.github/
+!.github/**
 
 # 許可の後ろで再拒否(名前で指定)
 target/
