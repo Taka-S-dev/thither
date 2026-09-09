@@ -77,6 +77,57 @@ foreach ($name in 'z', 'zi') {
     Ok(out)
 }
 
+pub fn bash() -> Result<String, Error> {
+    let exe = exe_path()?;
+    // Forward slashes work in every bash, including the MSYS one on Windows.
+    let exe = exe
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\\''");
+    let mut out = String::new();
+    out.push_str(
+        r#"# navkit: c / cf / z / zi for bash and zsh.
+# Add this line to ~/.bashrc or ~/.zshrc after zoxide init:
+#   eval "$(navkit init bash)"
+
+__navkit_pick() {
+    local mode=$1
+    shift
+    local path
+    # The query travels in an environment variable so that the same shim
+    # shape works in cmd.exe, whose argument parsing eats ^ & | on the way.
+    path=$(NAVKIT_QUERY="$*" '"#,
+    );
+    out.push_str(&exe);
+    out.push_str(
+        r#"' pick --mode "$mode") || return $?
+    [ -n "$path" ] || return 1
+    cd -- "$path" || return
+    command -v zoxide >/dev/null 2>&1 && zoxide add -- "$path" 2>/dev/null
+    return 0
+}
+
+__navkit_jump() {
+    if [ $# -eq 0 ]; then
+        cd ~ || return
+        return 0
+    fi
+    local path
+    path=$(zoxide query -- "$@") || return
+    cd -- "$path"
+}
+
+# zoxide init defines z and zi itself; replace them with the navkit versions.
+unalias z zi 2>/dev/null
+"#,
+    );
+    for (name, mode, _) in PICK_COMMANDS {
+        writeln!(out, "{name}() {{ __navkit_pick {mode} \"$@\"; }}")?;
+    }
+    out.push_str("z() { __navkit_jump \"$@\"; }\n");
+    Ok(out)
+}
+
 /// Returns `(file name, contents)` for each cmd.exe shim.
 pub fn cmd() -> Result<Vec<(String, String)>, Error> {
     let exe = exe_path()?;
@@ -170,6 +221,20 @@ mod tests {
         }
         assert!(out.contains("Remove-Alias"));
         assert!(out.contains("param([string]$Mode, [string[]]$Query)"));
+    }
+
+    #[test]
+    fn bash_defines_the_four_commands_with_a_slash_path() {
+        let out = bash().unwrap();
+        for f in ["\nc() {", "\ncf() {", "\nz() {", "\nzi() {"] {
+            assert!(out.contains(f), "missing {f}");
+        }
+        assert!(out.contains("unalias z zi"));
+        let exe_line = out.lines().find(|l| l.contains("pick --mode")).unwrap();
+        assert!(
+            !exe_line.contains('\\'),
+            "exe path must use forward slashes: {exe_line}"
+        );
     }
 
     #[test]

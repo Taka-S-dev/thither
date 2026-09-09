@@ -26,7 +26,7 @@
 |---|---|
 | powershell | 関数 `c` `cf` `z` `zi` の定義。zoxide の同名エイリアスを先に外す。選択後に `zoxide add` |
 | cmd | `c.cmd` `cf.cmd` `z.cmd` `zi.cmd` の内容(`--out <dir>` でファイル書き出し)。引数を `NAVKIT_QUERY` に入れて本体を呼ぶ |
-| bash | 同名の関数定義(将来) |
+| bash | 同名の関数定義(zsh でも同じ)。`eval "$(navkit init bash)"` で読む |
 
 シムの動作は 3 つとも同じ: 本体を呼ぶ → 出力があれば cd → `zoxide add` → 終了コードを返す。
 `z` だけは本体を呼ばず `zoxide query -- <keywords>` の結果に cd する(引数なしならホーム)。

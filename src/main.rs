@@ -137,7 +137,7 @@ fn init(shell: Shell, out: Option<PathBuf>) -> Result<(), Box<dyn std::error::Er
                 }
             }
         },
-        Shell::Bash => return Err("init bash is not implemented yet".into()),
+        Shell::Bash => print!("{}", shim::bash()?),
     }
     Ok(())
 }

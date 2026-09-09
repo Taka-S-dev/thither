@@ -17,6 +17,12 @@ PowerShell: `$PROFILE` の zoxide init より後に 1 行足す。
 Invoke-Expression (& C:\path\to\navkit.exe init powershell | Out-String)
 ```
 
+bash / zsh: `~/.bashrc` か `~/.zshrc` の zoxide init より後に 1 行足す。
+
+```bash
+eval "$(navkit init bash)"
+```
+
 cmd.exe: PATH の通ったフォルダに c.cmd cf.cmd z.cmd zi.cmd を書き出す。
 
 ```
