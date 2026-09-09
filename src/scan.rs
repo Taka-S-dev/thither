@@ -27,22 +27,29 @@ pub fn spawn(
     injector: Injector<Entry>,
     done: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    if mode == Mode::Recent {
+) -> JoinHandle<Result<(), String>> {
+    if matches!(mode, Mode::Recent | Mode::Favorites) {
         return std::thread::spawn(move || {
-            push_recent(&injector);
+            let result = push_saved(&injector, mode);
             done.store(true, Ordering::Release);
+            result
         });
     }
     let exclude: Arc<HashSet<OsString>> = Arc::new(exclude.iter().map(OsString::from).collect());
     std::thread::spawn(move || {
+        if let Err(error) = check_scan_root(&root) {
+            done.store(true, Ordering::Release);
+            return Err(error);
+        }
         let mut builder = WalkBuilder::new(&root);
         builder
             .standard_filters(false)
             .follow_links(false)
             .threads(std::thread::available_parallelism().map_or(4, |n| n.get()));
         builder.filter_entry(move |entry| {
-            !(entry.file_type().is_some_and(|t| t.is_dir()) && exclude.contains(entry.file_name()))
+            !skip_reparse_directory(entry)
+                && !(entry.file_type().is_some_and(|t| t.is_dir())
+                    && exclude.contains(entry.file_name()))
         });
 
         builder.build_parallel().run(|| {
@@ -62,7 +69,91 @@ pub fn spawn(
             })
         });
         done.store(true, Ordering::Release);
+        Ok(())
     })
+}
+
+#[cfg(windows)]
+fn check_scan_root(root: &Path) -> Result<(), String> {
+    check_windows_volume(root)?;
+    // Resolve a local junction used as the scan root before walking its target.
+    match std::fs::canonicalize(root) {
+        Ok(resolved) => check_windows_volume(&resolved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Cannot verify scan location: {error}. Use browse instead."
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn check_windows_volume(root: &Path) -> Result<(), String> {
+    use std::path::{Component, Prefix};
+    let absolute = std::path::absolute(root).map_err(|error| error.to_string())?;
+    let drive = match absolute.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+            _ => return Err(
+                "Recursive scan blocked on network or unsupported paths. Use browse (Tab) instead."
+                    .into(),
+            ),
+        },
+        _ => return Err("Cannot verify scan drive. Use browse (Tab) instead.".into()),
+    };
+    let name = [drive as u16, b':' as u16, b'\\' as u16, 0];
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    // SAFETY: name is a valid, NUL-terminated UTF-16 drive root for this call.
+    match unsafe { GetDriveTypeW(name.as_ptr()) } {
+        2 | 3 | 5 | 6 => Ok(()),
+        _ => Err(
+            "Recursive scan blocked on network or unverified drives. Use browse (Tab) instead."
+                .into(),
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn check_scan_root(_root: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn skip_reparse_directory(entry: &DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    entry.depth() > 0
+        && entry.file_type().is_some_and(|kind| kind.is_dir())
+        && entry
+            .metadata()
+            .map_or(true, |metadata| metadata.file_attributes() & 0x400 != 0)
+}
+
+#[cfg(not(windows))]
+fn skip_reparse_directory(_entry: &DirEntry) -> bool {
+    false
+}
+
+#[cfg(all(test, windows))]
+mod network_tests {
+    use super::*;
+
+    #[test]
+    fn unc_paths_are_blocked_without_contacting_the_server() {
+        for path in [
+            r"\\unreachable.invalid\share",
+            r"\\?\UNC\unreachable.invalid\share",
+            "//unreachable.invalid/share",
+        ] {
+            assert!(
+                check_scan_root(Path::new(path))
+                    .unwrap_err()
+                    .contains("blocked")
+            );
+        }
+        assert!(check_scan_root(&std::env::current_dir().unwrap()).is_ok());
+    }
 }
 
 fn to_entry(root: &Path, entry: &DirEntry, mode: Mode) -> Option<Entry> {
@@ -73,7 +164,7 @@ fn to_entry(root: &Path, entry: &DirEntry, mode: Mode) -> Option<Entry> {
     let wanted = match mode {
         Mode::Dirs => is_dir,
         Mode::Files => !is_dir,
-        Mode::Recent | Mode::Browse => false,
+        Mode::Recent | Mode::Favorites | Mode::Browse => false,
     };
     if !wanted {
         return None;
@@ -110,12 +201,19 @@ pub fn recent() -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
-fn push_recent(injector: &Injector<Entry>) {
-    let Ok(paths) = recent() else { return };
+fn push_saved(injector: &Injector<Entry>, mode: Mode) -> Result<(), String> {
+    let paths = if mode == Mode::Favorites {
+        crate::favorites::path()
+            .and_then(|path| crate::favorites::read(&path))
+            .map_err(|error| error.to_string())?
+    } else {
+        recent()?
+    };
     for path in paths {
         let display = path.to_string_lossy().into_owned();
         injector.push(Entry { path, display }, |item, cols| {
             cols[0] = item.display.as_str().into()
         });
     }
+    Ok(())
 }

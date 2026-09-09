@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Shows `path` in the file manager. A file is revealed inside its folder.
 pub fn reveal(path: &Path) -> std::io::Result<()> {
@@ -23,7 +23,16 @@ pub fn launch(path: &Path) -> std::io::Result<()> {
 }
 
 fn spawn(program: &str, args: Vec<OsString>) -> std::io::Result<()> {
-    Command::new(program).args(args).spawn().map(|_| ())
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(windows)]

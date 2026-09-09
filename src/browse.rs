@@ -59,8 +59,16 @@ pub struct Browser {
     rows: Vec<Row>,
     pub selected: usize,
     matcher: Matcher,
-    /// Names to reselect when going up, keyed by the directory being left.
-    remembered: Vec<(PathBuf, String)>,
+    /// Loaded on navigation or F5, never during drawing.
+    parent: Option<(Vec<Item>, Option<usize>)>,
+    back: Vec<Visit>,
+    forward: Vec<Visit>,
+}
+
+struct Visit {
+    cwd: PathBuf,
+    filter: String,
+    selected: Option<String>,
 }
 
 impl Browser {
@@ -72,7 +80,9 @@ impl Browser {
             rows: Vec::new(),
             selected: 0,
             matcher: Matcher::new(Config::DEFAULT),
-            remembered: Vec::new(),
+            parent: None,
+            back: Vec::new(),
+            forward: Vec::new(),
         };
         browser.load(cwd, None);
         browser
@@ -105,8 +115,75 @@ impl Browser {
     }
 
     fn load(&mut self, dir: PathBuf, reselect: Option<&str>) {
+        if !self.cwd.as_os_str().is_empty() && self.cwd != dir {
+            let visit = self.visit();
+            Self::push_visit(&mut self.back, visit);
+            self.forward.clear();
+        }
+        self.load_state(dir, reselect);
+    }
+
+    fn visit(&self) -> Visit {
+        Visit {
+            cwd: self.cwd.clone(),
+            filter: self.filter.clone(),
+            selected: self.selected_item().map(|item| item.name.clone()),
+        }
+    }
+
+    fn push_visit(stack: &mut Vec<Visit>, visit: Visit) {
+        if stack.len() == 100 {
+            stack.remove(0);
+        }
+        stack.push(visit);
+    }
+
+    /// Missing locations are skipped without replacing the current directory.
+    pub fn history(&mut self, forward: bool) -> bool {
+        loop {
+            let visit = if forward {
+                self.forward.pop()
+            } else {
+                self.back.pop()
+            };
+            let Some(visit) = visit else {
+                return false;
+            };
+            if !visit.cwd.is_dir() {
+                continue;
+            }
+            let current = self.visit();
+            Self::push_visit(
+                if forward {
+                    &mut self.back
+                } else {
+                    &mut self.forward
+                },
+                current,
+            );
+            self.load_state(visit.cwd, None);
+            self.set_filter(&visit.filter);
+            if let Some(name) = visit.selected
+                && let Some(index) = self
+                    .rows
+                    .iter()
+                    .position(|row| self.items[row.index].name == name)
+            {
+                self.selected = index;
+            }
+            return true;
+        }
+    }
+
+    fn load_state(&mut self, dir: PathBuf, reselect: Option<&str>) {
         self.items = read_dir(&dir);
         self.cwd = dir;
+        self.parent = self.cwd.parent().map(|parent| {
+            let items = read_dir(parent);
+            let here = self.cwd.file_name().map(|n| n.to_string_lossy());
+            let pos = here.and_then(|h| items.iter().position(|i| i.name == h));
+            (items, pos)
+        });
         self.filter.clear();
         self.apply_filter();
         if let Some(name) = reselect
@@ -120,6 +197,18 @@ impl Browser {
     }
 
     /// Steps into the selected directory. Files are left alone.
+    pub fn navigate_to(&mut self, path: &Path) {
+        if path.is_dir() {
+            self.load(path.to_path_buf(), None);
+        } else if path.is_file()
+            && let Some(parent) = path.parent()
+        {
+            let name = path.file_name().map(|name| name.to_string_lossy());
+            self.load(parent.to_path_buf(), name.as_deref());
+        }
+    }
+
+    /// Steps into the selected directory. Files are left alone.
     pub fn enter(&mut self) {
         let Some(item) = self.selected_item() else {
             return;
@@ -127,9 +216,7 @@ impl Browser {
         if !item.is_dir {
             return;
         }
-        let name = item.name.clone();
-        let next = self.cwd.join(&name);
-        self.remembered.push((self.cwd.clone(), name));
+        let next = self.cwd.join(&item.name);
         self.load(next, None);
     }
 
@@ -142,7 +229,6 @@ impl Browser {
             .cwd
             .file_name()
             .map(|n| n.to_string_lossy().into_owned());
-        self.remembered.retain(|(dir, _)| dir != &parent);
         self.load(parent, left.as_deref());
     }
 
@@ -194,18 +280,67 @@ impl Browser {
     }
 
     /// Entries of the parent directory, with the position of the current one.
-    pub fn parent_listing(&self) -> Option<(Vec<Item>, Option<usize>)> {
-        let parent = self.cwd.parent()?;
-        let items = read_dir(parent);
-        let here = self.cwd.file_name().map(|n| n.to_string_lossy());
-        let pos = here.and_then(|h| items.iter().position(|i| i.name == h));
-        Some((items, pos))
+    pub fn parent_listing(&self) -> Option<(&[Item], Option<usize>)> {
+        self.parent
+            .as_ref()
+            .map(|(items, pos)| (items.as_slice(), *pos))
+    }
+
+    /// Refresh both listings while preserving the query and selection where possible.
+    pub fn refresh(&mut self) {
+        let selected = self.selected_item().map(|item| item.name.clone());
+        let filter = self.filter.clone();
+        self.load(self.cwd.clone(), None);
+        self.set_filter(&filter);
+        if let Some(name) = selected
+            && let Some(pos) = self
+                .rows
+                .iter()
+                .position(|row| self.items[row.index].name == name)
+        {
+            self.selected = pos;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_listings_refresh_without_losing_filter_or_selection() {
+        let root = fixture("refresh");
+        let mut browser = Browser::new(root.join("src"));
+        browser.set_filter("deep");
+        std::fs::create_dir(root.join("new-sibling")).unwrap();
+        std::fs::create_dir(root.join("src/new-child")).unwrap();
+        assert!(
+            !browser
+                .parent_listing()
+                .unwrap()
+                .0
+                .iter()
+                .any(|item| item.name == "new-sibling")
+        );
+        assert!(!browser.items().iter().any(|item| item.name == "new-child"));
+        browser.refresh();
+        assert!(
+            browser
+                .parent_listing()
+                .unwrap()
+                .0
+                .iter()
+                .any(|item| item.name == "new-sibling")
+        );
+        assert!(browser.items().iter().any(|item| item.name == "new-child"));
+        assert_eq!(browser.filter, "deep");
+        assert_eq!(browser.selected_item().unwrap().name, "deep");
+        std::fs::remove_dir_all(root.join("src/deep")).unwrap();
+        browser.refresh();
+        assert!(browser.selected_item().is_none());
+        assert_eq!(browser.target(), browser.cwd);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// Each test gets its own tree: tests run in parallel inside one process.
     fn fixture(name: &str) -> PathBuf {
@@ -217,6 +352,33 @@ mod tests {
         std::fs::write(root.join("README.md"), "").unwrap();
         std::fs::write(root.join("src/main.rs"), "").unwrap();
         root
+    }
+
+    #[test]
+    fn history_restores_filter_and_selection_and_discards_forward_branch() {
+        let root = fixture("history");
+        let mut browser = Browser::new(root.clone());
+        browser.set_filter("src");
+        browser.enter();
+        browser.set_filter("deep");
+        browser.enter();
+        assert!(browser.history(false));
+        assert_eq!(browser.cwd, root.join("src"));
+        assert_eq!(browser.filter, "deep");
+        assert_eq!(browser.selected_item().unwrap().name, "deep");
+        assert!(browser.history(false));
+        assert_eq!(browser.cwd, root);
+        assert_eq!(browser.filter, "src");
+        assert!(browser.history(true));
+        assert_eq!(browser.cwd, root.join("src"));
+        browser.navigate_to(&root.join("docs"));
+        assert!(!browser.history(true));
+        assert!(browser.history(false));
+        assert_eq!(browser.cwd, root.join("src"));
+        std::fs::remove_dir_all(root.join("docs")).unwrap();
+        assert!(!browser.history(true));
+        assert_eq!(browser.cwd, root.join("src"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

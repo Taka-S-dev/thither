@@ -1,0 +1,8 @@
+# Enable only when your terminal uses a Nerd Font.
+icons = false
+
+# Click to select, wheel to move, and click mode labels to switch modes.
+mouse = true
+
+# Per-file temporary copy limit. 0 disables the action.
+temp_copy_max_mib = 100

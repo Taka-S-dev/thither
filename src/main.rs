@@ -1,5 +1,9 @@
+mod action_menu;
+mod actions;
 mod browse;
 mod config;
+mod favorites;
+mod icons;
 mod open;
 mod picker;
 mod scan;
@@ -20,6 +24,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create or validate the user-defined action menu.
+    Actions {
+        #[command(subcommand)]
+        command: ActionsCommand,
+    },
+    /// Add, remove or list pinned directories (independent of zoxide).
+    Favorite {
+        #[command(subcommand)]
+        command: FavoriteCommand,
+    },
     /// Pick a path interactively and print it to stdout.
     Pick(PickArgs),
     /// Print shell integration code for the given shell.
@@ -31,6 +45,22 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum ActionsCommand {
+    Init,
+    Check,
+}
+
+#[derive(Subcommand)]
+enum FavoriteCommand {
+    /// Pin a directory. Defaults to the current directory.
+    Add { path: Option<PathBuf> },
+    /// Unpin a directory, including one that no longer exists.
+    Remove { path: Option<PathBuf> },
+    /// Print the pinned directories.
+    List,
 }
 
 #[derive(clap::Args)]
@@ -57,6 +87,8 @@ pub enum Mode {
     Files,
     /// Recently visited directories from zoxide.
     Recent,
+    /// Pinned directories, independent of zoxide.
+    Favorites,
     /// Walk the tree one level at a time.
     Browse,
 }
@@ -67,6 +99,7 @@ impl Mode {
             Mode::Dirs => "dirs",
             Mode::Files => "files",
             Mode::Recent => "recent",
+            Mode::Favorites => "favorites",
             Mode::Browse => "browse",
         }
     }
@@ -91,6 +124,19 @@ const EXIT_ERROR: u8 = 2;
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Actions { command } => {
+            let result = match command {
+                ActionsCommand::Init => actions::init(),
+                ActionsCommand::Check => actions::check(),
+            };
+            result
+                .map(|path| {
+                    eprintln!("{}", path.display());
+                    Outcome::Done
+                })
+                .map_err(Into::into)
+        }
+        Command::Favorite { command } => favorite(command).map(|()| Outcome::Done),
         Command::Pick(args) => pick(args).map(|p| match p {
             Some(path) => Outcome::Path(path),
             None => Outcome::Cancelled,
@@ -109,6 +155,28 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_ERROR)
         }
     }
+}
+
+fn favorite(command: FavoriteCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let file = favorites::path()?;
+    let (path, add) = match command {
+        FavoriteCommand::List => {
+            for path in favorites::read(&file)? {
+                println!("{}", path.display());
+            }
+            return Ok(());
+        }
+        FavoriteCommand::Add { path } => (path, true),
+        FavoriteCommand::Remove { path } => (path, false),
+    };
+    let path = path.unwrap_or(std::env::current_dir()?);
+    favorites::update(&file, &path, Some(add))?;
+    eprintln!(
+        "{}: {}",
+        if add { "Pinned" } else { "Unpinned" },
+        path.display()
+    );
+    Ok(())
 }
 
 fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "include_defaults": true,
+  "actions": [
+    {
+      "name": "VS Code (new window)",
+      "program": "code",
+      "args": ["--new-window", "{path}"],
+      "target": "any",
+      "run": "detach"
+    },
+    {
+      "name": "Git status",
+      "program": "git",
+      "args": ["-C", "{dir}", "status", "--short"],
+      "target": "any",
+      "run": "terminal"
+    }
+  ]
+}
