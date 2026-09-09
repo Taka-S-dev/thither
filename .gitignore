@@ -1,0 +1,24 @@
+# 許可リスト方式: いったん全部無視し、リポジトリの構成ファイルだけ戻す
+*
+!.gitignore
+!Cargo.toml
+!Cargo.lock
+!README.md
+!LICENSE
+!src/
+!src/**
+!docs/
+!docs/**
+!tests/
+!tests/**
+
+# 許可の後ろで再拒否(名前で指定)
+target/
+CLAUDE.md
+.claude/
+.env
+.env.*
+secrets.*
+credentials.*
+*.pem
+id_rsa*
