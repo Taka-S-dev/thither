@@ -34,13 +34,16 @@
 ## 画面(pick)
 
 ```
-┌ [dirs] C:\Users\takay\folder\work\C ─────────────── 7861 ┐
-│ > ope█                                                   │
-│   openssl-1.1.1q                                         │
-│   Libcurl/curl                                           │
-│   ...                                                    │
-└ Tab: mode  Enter: cd  Esc: cancel ───────────────────────┘
+┌ dirs  files  recent  C:\Users\takay\folder\work\C ─ 12/7861 ┐┌ openssl-1.1.1q ──────┐
+│ > ope█                                                       ││ apps\                │
+│ > openssl-1.1.1q                                             ││ crypto\              │
+│   Libcurl\curl                                               ││ CHANGES              │
+│   ...                                                        ││ ...                  │
+└ Tab: mode  Enter: cd  Esc: cancel ───────────────────────────┘└──────────────────────┘
 ```
+
+左がタブ付きの候補一覧、右が選択中のディレクトリの中身(ディレクトリを先に、末尾に区切り付き)。
+files モードでは親ディレクトリの中身を出す。幅 80 桁未満なら右ペインは出さない。
 
 | キー | 動作 |
 |---|---|
@@ -48,7 +51,7 @@
 | Up/Down, Ctrl-K/Ctrl-J | 候補移動 |
 | Enter | 決定 |
 | Esc, Ctrl-C | キャンセル(終了コード 1) |
-| Tab | モード切替 dirs → files → recent → dirs(マイルストーン 4) |
+| Tab / Shift-Tab | モード切替 dirs → files → recent → dirs(Shift-Tab は逆順)。クエリは引き継ぎ、各モードの走査結果は保持 |
 
 表示は起点からの相対パスで、区切りは OS のもの。一致した文字は色付き(fzf と同じ)。出力は絶対パスで末尾区切りなし。
 

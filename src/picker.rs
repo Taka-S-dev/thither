@@ -1,7 +1,8 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -26,16 +27,90 @@ type Error = Box<dyn std::error::Error>;
 /// Nucleo tick budget per frame. Keeps redraws under 16 ms while a scan is running.
 const TICK_MS: u64 = 10;
 const POLL: Duration = Duration::from_millis(16);
+/// The preview pane is dropped below this terminal width.
+const MIN_WIDTH_FOR_PREVIEW: u16 = 80;
+/// Directory entries read for the preview. Enough to fill any pane; bounds the cost on huge folders.
+const PREVIEW_LIMIT: usize = 500;
+
+const MODE_ORDER: [Mode; 3] = [Mode::Dirs, Mode::Files, Mode::Recent];
+
+/// One mode's candidates: its matcher and the scan that feeds it.
+/// Sources are created the first time a mode is shown and kept, so switching
+/// back with Tab is instant.
+struct Source {
+    matcher: Nucleo<Entry>,
+    scan_done: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    scanner: Option<JoinHandle<()>>,
+    selected: u32,
+}
+
+impl Source {
+    fn start(mode: Mode, root: &Path, config: &Config) -> Self {
+        let matcher = Nucleo::new(MatchConfig::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
+        let scan_done = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let scanner = scan::spawn(
+            root.to_path_buf(),
+            mode,
+            &config.exclude,
+            matcher.injector(),
+            scan_done.clone(),
+            cancel.clone(),
+        );
+        Self {
+            matcher,
+            scan_done,
+            cancel,
+            scanner: Some(scanner),
+            selected: 0,
+        }
+    }
+
+    fn set_query(&mut self, query: &str, append: bool) {
+        self.matcher
+            .pattern
+            .reparse(0, query, CaseMatching::Ignore, Normalization::Smart, append);
+        self.selected = 0;
+    }
+
+    fn selected_entry(&self) -> Option<Entry> {
+        let item = self.matcher.snapshot().get_matched_item(self.selected)?;
+        Some(Entry {
+            path: item.data.path.clone(),
+            display: item.data.display.clone(),
+        })
+    }
+
+    fn clamp_selection(&mut self) {
+        let count = self.matcher.snapshot().matched_item_count();
+        if count == 0 {
+            self.selected = 0;
+        } else if self.selected >= count {
+            self.selected = count - 1;
+        }
+    }
+}
+
+impl Drop for Source {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.scanner.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 struct Picker {
-    matcher: Nucleo<Entry>,
+    sources: [Option<Source>; 3],
+    mode: Mode,
+    query: String,
+    root: PathBuf,
+    config: Config,
     /// Recomputes match positions for the visible rows only.
     highlighter: Matcher,
-    query: String,
-    selected: u32,
-    mode: Mode,
-    root: PathBuf,
-    scan_done: Arc<AtomicBool>,
+    /// Directory listing shown on the right, keyed by the path it was read from.
+    preview: Option<(PathBuf, Vec<String>)>,
 }
 
 enum Action {
@@ -49,44 +124,34 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
         // Fail with a message now rather than showing an empty picker.
         scan::recent()?;
     }
-    let matcher = Nucleo::new(MatchConfig::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
-    let scan_done = Arc::new(AtomicBool::new(false));
-    let mut scanner = Some(scan::spawn(
-        root.clone(),
-        args.mode,
-        &config.exclude,
-        matcher.injector(),
-        scan_done.clone(),
-    ));
     let mut picker = Picker {
-        matcher,
-        highlighter: Matcher::new(MatchConfig::DEFAULT.match_paths()),
-        query: String::new(),
-        selected: 0,
+        sources: [None, None, None],
         mode: args.mode,
+        query: String::new(),
         root,
-        scan_done,
+        config,
+        highlighter: Matcher::new(MatchConfig::DEFAULT.match_paths()),
+        preview: None,
     };
     picker.set_query(&args.query);
 
     if args.select_1 {
-        if let Some(handle) = scanner.take() {
+        let source = picker.source();
+        if let Some(handle) = source.scanner.take() {
             handle.join().map_err(|_| "scan thread panicked")?;
         }
-        while picker.matcher.tick(TICK_MS).running {}
-        let snapshot = picker.matcher.snapshot();
-        if snapshot.matched_item_count() == 1 {
-            let item = snapshot.get_matched_item(0).expect("one match");
-            return Ok(Some(output_path(item.data, args.mode)));
+        while source.matcher.tick(TICK_MS).running {}
+        if source.matcher.snapshot().matched_item_count() == 1
+            && let Some(entry) = source.selected_entry()
+        {
+            return Ok(Some(output_path(&entry, args.mode)));
         }
     }
 
     let result = picker.run_tui();
+    let mode = picker.mode;
     drop(picker);
-    if let Some(handle) = scanner {
-        let _ = handle.join();
-    }
-    result.map(|entry| entry.map(|e| output_path(&e, args.mode)))
+    result.map(|entry| entry.map(|e| output_path(&e, mode)))
 }
 
 /// Files mode outputs the parent directory: the point is to cd there.
@@ -101,25 +166,45 @@ fn output_path(entry: &Entry, mode: Mode) -> PathBuf {
     }
 }
 
+fn mode_index(mode: Mode) -> usize {
+    MODE_ORDER
+        .iter()
+        .position(|&m| m == mode)
+        .expect("known mode")
+}
+
 impl Picker {
+    /// The current mode's source, started on first use.
+    fn source(&mut self) -> &mut Source {
+        let idx = mode_index(self.mode);
+        if self.sources[idx].is_none() {
+            let mut source = Source::start(self.mode, &self.root, &self.config);
+            source.set_query(&self.query, false);
+            self.sources[idx] = Some(source);
+        }
+        self.sources[idx].as_mut().expect("just created")
+    }
+
     fn set_query(&mut self, query: &str) {
         let append = query.starts_with(&self.query);
         self.query = query.to_string();
-        self.matcher.pattern.reparse(
-            0,
-            &self.query,
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            append,
-        );
-        self.selected = 0;
+        let q = self.query.clone();
+        self.source().set_query(&q, append);
+    }
+
+    fn switch_mode(&mut self, step: isize) {
+        let idx = mode_index(self.mode) as isize + step;
+        let len = MODE_ORDER.len() as isize;
+        self.mode = MODE_ORDER[idx.rem_euclid(len) as usize];
+        self.source().selected = 0;
     }
 
     fn run_tui(&mut self) -> Result<Option<Entry>, Error> {
         let mut terminal = TerminalGuard::enter()?;
         loop {
-            self.matcher.tick(TICK_MS);
-            self.clamp_selection();
+            let source = self.source();
+            source.matcher.tick(TICK_MS);
+            source.clamp_selection();
             terminal.draw(|frame| self.render(frame.area(), frame))?;
 
             if !event::poll(POLL)? {
@@ -135,13 +220,9 @@ impl Picker {
                 Action::Continue => {}
                 Action::Cancel => return Ok(None),
                 Action::Accept => {
-                    let snapshot = self.matcher.snapshot();
-                    let Some(item) = snapshot.get_matched_item(self.selected) else {
-                        continue;
-                    };
-                    let path = item.data.path.clone();
-                    let display = item.data.display.clone();
-                    return Ok(Some(Entry { path, display }));
+                    if let Some(entry) = self.source().selected_entry() {
+                        return Ok(Some(entry));
+                    }
                 }
             }
         }
@@ -152,12 +233,22 @@ impl Picker {
         match (key.code, ctrl) {
             (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => Action::Cancel,
             (KeyCode::Enter, _) => Action::Accept,
+            (KeyCode::Tab, _) => {
+                self.switch_mode(1);
+                Action::Continue
+            }
+            (KeyCode::BackTab, _) => {
+                self.switch_mode(-1);
+                Action::Continue
+            }
             (KeyCode::Up, _) | (KeyCode::Char('k'), true) => {
-                self.selected = self.selected.saturating_sub(1);
+                let s = self.source();
+                s.selected = s.selected.saturating_sub(1);
                 Action::Continue
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), true) => {
-                self.selected = self.selected.saturating_add(1);
+                let s = self.source();
+                s.selected = s.selected.saturating_add(1);
                 Action::Continue
             }
             (KeyCode::Backspace, _) => {
@@ -180,20 +271,52 @@ impl Picker {
         }
     }
 
-    fn clamp_selection(&mut self) {
-        let count = self.matcher.snapshot().matched_item_count();
-        if count == 0 {
-            self.selected = 0;
-        } else if self.selected >= count {
-            self.selected = count - 1;
-        }
-    }
-
     fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
-        let snapshot = self.matcher.snapshot();
+        let mode = self.mode;
+        let show_preview = area.width >= MIN_WIDTH_FOR_PREVIEW;
+        let [list_area, preview_area] = if show_preview {
+            Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area)
+        } else {
+            [area, Rect::default()]
+        };
+
+        let selected = self.source().selected_entry();
+        if show_preview {
+            let dir = selected
+                .as_ref()
+                .map(|e| output_path(e, mode))
+                .filter(|p| p.is_dir());
+            self.render_preview(preview_area, frame, dir.as_deref());
+        }
+
+        let mut title: Vec<Span> = MODE_ORDER
+            .iter()
+            .flat_map(|&m| {
+                let style = if m == mode {
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                [
+                    Span::styled(format!(" {} ", m.label()), style),
+                    Span::raw(" "),
+                ]
+            })
+            .collect();
+        let location = match mode {
+            Mode::Recent => "zoxide".to_string(),
+            _ => self.root.display().to_string(),
+        };
+        title.push(Span::raw(location));
+        title.push(Span::raw(" "));
+
+        let source = self.sources[mode_index(mode)]
+            .as_mut()
+            .expect("current source");
+        let snapshot = source.matcher.snapshot();
         let count = snapshot.matched_item_count();
         let total = snapshot.item_count();
-        let scanning = if self.scan_done.load(Ordering::Acquire) {
+        let scanning = if source.scan_done.load(Ordering::Acquire) {
             ""
         } else {
             " scanning"
@@ -201,16 +324,13 @@ impl Picker {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(match self.mode {
-                Mode::Recent => format!(" [{}] zoxide ", self.mode.label()),
-                _ => format!(" [{}] {} ", self.mode.label(), self.root.display()),
-            })
+            .title(Line::from(title))
             .title_top(Line::from(format!(" {count}/{total}{scanning} ")).right_aligned())
-            .title_bottom(" Enter: cd  Esc: cancel ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+            .title_bottom(" Tab: mode  Enter: cd  Esc: cancel ");
+        let inner = block.inner(list_area);
+        frame.render_widget(block, list_area);
 
-        let [prompt_area, list_area] =
+        let [prompt_area, rows_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
 
         let prompt = Paragraph::new(Line::from(vec![
@@ -223,12 +343,12 @@ impl Picker {
             prompt_area.y,
         ));
 
-        let height = list_area.height as u32;
+        let height = rows_area.height as u32;
         if height == 0 || count == 0 {
             return;
         }
-        let first = self
-            .selected
+        let selected = source.selected;
+        let first = selected
             .saturating_sub(height - 1)
             .min(count.saturating_sub(height));
         let last = (first + height).min(count);
@@ -247,16 +367,80 @@ impl Picker {
                 );
                 indices.sort_unstable();
                 indices.dedup();
-                let marker = if idx == self.selected { "> " } else { "  " };
+                let marker = if idx == selected { "> " } else { "  " };
                 let mut line = highlight_line(marker, &item.data.display, &indices);
-                if idx == self.selected {
+                if idx == selected {
                     line = line.style(Style::default().add_modifier(Modifier::REVERSED));
                 }
                 ListItem::new(line)
             })
             .collect();
-        frame.render_widget(List::new(items), list_area);
+        frame.render_widget(List::new(items), rows_area);
     }
+
+    /// Lists the directory the current selection would cd into.
+    fn render_preview(&mut self, area: Rect, frame: &mut ratatui::Frame, dir: Option<&Path>) {
+        let title = match dir {
+            Some(d) => {
+                let shown = d.strip_prefix(&self.root).unwrap_or(d);
+                let shown = shown.display().to_string();
+                format!(" {} ", if shown.is_empty() { "." } else { &shown })
+            }
+            None => String::new(),
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let Some(dir) = dir else {
+            self.preview = None;
+            return;
+        };
+        let cached = self.preview.as_ref().is_some_and(|(p, _)| p == dir);
+        if !cached {
+            self.preview = Some((dir.to_path_buf(), list_dir(dir)));
+        }
+        let Some((_, names)) = &self.preview else {
+            return;
+        };
+        let items: Vec<ListItem> = names
+            .iter()
+            .take(inner.height as usize)
+            .map(|n| {
+                let style = if n.ends_with(std::path::MAIN_SEPARATOR) {
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Span::styled(n.as_str(), style))
+            })
+            .collect();
+        frame.render_widget(List::new(items), inner);
+    }
+}
+
+/// Directory names first (with a trailing separator), then files, both sorted case-insensitively.
+fn list_dir(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec!["(unreadable)".to_string()];
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in entries.flatten().take(PREVIEW_LIMIT) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            dirs.push(format!("{name}{}", std::path::MAIN_SEPARATOR));
+        } else {
+            files.push(name);
+        }
+    }
+    let key = |s: &String| s.to_lowercase();
+    dirs.sort_by_key(key);
+    files.sort_by_key(key);
+    dirs.extend(files);
+    dirs
 }
 
 /// Builds one row, colouring the characters at `indices` (sorted, char positions).
@@ -372,6 +556,37 @@ mod tests {
         assert_eq!(
             pieces(&line),
             vec![("  ".into(), false), ("docs".into(), false)]
+        );
+    }
+
+    #[test]
+    fn mode_order_wraps_both_ways() {
+        assert_eq!(mode_index(Mode::Dirs), 0);
+        assert_eq!(mode_index(Mode::Recent), 2);
+        let next = |m: Mode, step: isize| {
+            let i = mode_index(m) as isize + step;
+            MODE_ORDER[i.rem_euclid(MODE_ORDER.len() as isize) as usize]
+        };
+        assert_eq!(next(Mode::Recent, 1), Mode::Dirs);
+        assert_eq!(next(Mode::Dirs, -1), Mode::Recent);
+    }
+
+    #[test]
+    fn list_dir_puts_directories_first() {
+        let tmp = std::env::temp_dir().join(format!("navkit-preview-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("zeta")).unwrap();
+        std::fs::write(tmp.join("Alpha.txt"), "").unwrap();
+        std::fs::write(tmp.join("beta.txt"), "").unwrap();
+        let names = list_dir(&tmp);
+        std::fs::remove_dir_all(&tmp).unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            names,
+            vec![
+                format!("zeta{sep}"),
+                "Alpha.txt".to_string(),
+                "beta.txt".to_string()
+            ]
         );
     }
 }

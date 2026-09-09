@@ -19,12 +19,14 @@ pub struct Entry {
 
 /// Walks `root` on background threads, pushing entries into `injector` as they are found.
 /// `.gitignore` files are not honoured: build outputs are valid destinations too.
+/// Setting `cancel` stops the walk early; `done` is set when the thread is finished either way.
 pub fn spawn(
     root: PathBuf,
     mode: Mode,
     exclude: &[String],
     injector: Injector<Entry>,
     done: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     if mode == Mode::Recent {
         return std::thread::spawn(move || {
@@ -46,7 +48,11 @@ pub fn spawn(
         builder.build_parallel().run(|| {
             let root = root.clone();
             let injector = injector.clone();
+            let cancel = cancel.clone();
             Box::new(move |entry| {
+                if cancel.load(Ordering::Relaxed) {
+                    return WalkState::Quit;
+                }
                 if let Ok(entry) = entry
                     && let Some(item) = to_entry(&root, &entry, mode)
                 {

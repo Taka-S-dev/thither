@@ -46,7 +46,7 @@ pub struct PickArgs {
     pub select_1: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Mode {
     /// Directories below the root.
     Dirs,
