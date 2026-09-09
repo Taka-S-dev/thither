@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::{Terminal, TerminalOptions, Viewport};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::browse::{self, Browser};
 use crate::config::Config;
@@ -462,8 +463,8 @@ impl Picker {
         }
 
         let location = match mode {
-            Mode::Recent => "zoxide".to_string(),
-            _ => self.root.display().to_string(),
+            Mode::Recent => vec![Span::styled("zoxide", theme::HEADER)],
+            _ => location_spans(&self.root),
         };
         let header = header_line(mode, location);
 
@@ -602,13 +603,14 @@ impl Picker {
             Span::styled("─".repeat(rule_width), theme::BORDER),
         ]));
         frame.render_widget(info, info_area);
-        let header = header_line(Mode::Browse, browser.cwd.display().to_string());
+        let header = header_line(Mode::Browse, location_spans(&browser.cwd));
         frame.render_widget(Paragraph::new(Line::from(header)), header_area);
 
+        // The middle column is the subject, so it gets the most room.
         let [parent_area, sep1, current_area, sep2, preview_area] = Layout::horizontal([
-            Constraint::Percentage(25),
+            Constraint::Percentage(20),
             Constraint::Length(1),
-            Constraint::Percentage(40),
+            Constraint::Percentage(45),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -634,13 +636,14 @@ impl Picker {
                 .take(height)
                 .map(|(i, item)| {
                     let current = Some(i) == here;
-                    let mut line = highlight_line(current, &item.label(), &[]);
-                    if current {
-                        line = line.style(theme::CURRENT);
-                    } else if item.is_dir {
-                        line = line.style(theme::DIR);
-                    }
-                    ListItem::new(line)
+                    browse_row(
+                        &item.label(),
+                        item.is_dir,
+                        current,
+                        true,
+                        &[],
+                        parent_area.width as usize,
+                    )
                 })
                 .collect();
             frame.render_widget(List::new(rows), parent_area);
@@ -660,15 +663,14 @@ impl Picker {
             .take(height)
             .map(|(i, row)| {
                 let item = &browser.items()[row.index];
-                let current = i == selected;
-                let label = item.label();
-                let mut line = highlight_line(current, &label, &row.hits);
-                if current {
-                    line = line.style(theme::CURRENT);
-                } else if item.is_dir {
-                    line = line.style(theme::DIR);
-                }
-                ListItem::new(line)
+                browse_row(
+                    &item.label(),
+                    item.is_dir,
+                    i == selected,
+                    false,
+                    &row.hits,
+                    current_area.width as usize,
+                )
             })
             .collect();
         frame.render_widget(List::new(rows), current_area);
@@ -685,12 +687,8 @@ impl Picker {
                     .iter()
                     .take(preview_area.height as usize)
                     .map(|n| {
-                        let style = if n.ends_with(std::path::MAIN_SEPARATOR) {
-                            theme::DIR
-                        } else {
-                            Style::default()
-                        };
-                        ListItem::new(Line::from(Span::styled(format!(" {n}"), style)))
+                        let is_dir = n.ends_with(std::path::MAIN_SEPARATOR);
+                        browse_row(n, is_dir, false, true, &[], preview_area.width as usize)
                     })
                     .collect();
                 frame.render_widget(List::new(rows), preview_area);
@@ -747,8 +745,70 @@ impl Picker {
     }
 }
 
+/// Trims `text` to `width` terminal columns, ending in an ellipsis when it does
+/// not fit. Counts display width, so a Japanese name is not cut mid-cell.
+fn fit(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width - 1 {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// One row of a browse column: trimmed to the width, coloured by its role.
+/// `side` marks the parent and preview columns, which are drawn muted.
+fn browse_row(
+    label: &str,
+    is_dir: bool,
+    current: bool,
+    side: bool,
+    hits: &[u32],
+    width: usize,
+) -> ListItem<'static> {
+    let text = fit(label, width.saturating_sub(2));
+    let len = text.chars().count() as u32;
+    let kept: Vec<u32> = hits.iter().copied().filter(|&i| i < len).collect();
+    let style = match (current, is_dir, side) {
+        (true, _, _) => theme::CURRENT,
+        (_, true, true) => theme::SIDE_DIR,
+        (_, true, false) => theme::DIR,
+        (_, false, true) => theme::SIDE,
+        (_, false, false) => Style::default(),
+    };
+    ListItem::new(highlight_line(current, &text, &kept).style(style))
+}
+
+/// The path with its last segment in bold, so the folder in the middle column
+/// can be found in the header at a glance.
+fn location_spans(path: &Path) -> Vec<Span<'static>> {
+    let full = path.display().to_string();
+    match path.file_name().map(|n| n.to_string_lossy().into_owned()) {
+        Some(name) if full.ends_with(&name) => {
+            let head = full[..full.len() - name.len()].to_string();
+            vec![
+                Span::styled(head, theme::HEADER),
+                Span::styled(name, theme::HEADER.add_modifier(Modifier::BOLD)),
+            ]
+        }
+        _ => vec![Span::styled(full, theme::HEADER)],
+    }
+}
+
 /// `[dirs|files|recent|browse] <location>` with the active mode underlined.
-fn header_line(mode: Mode, location: String) -> Vec<Span<'static>> {
+fn header_line(mode: Mode, location: Vec<Span<'static>>) -> Vec<Span<'static>> {
     let mut header: Vec<Span> = vec![Span::styled("[", theme::HEADER)];
     for (i, &m) in MODE_ORDER.iter().enumerate() {
         if i > 0 {
@@ -762,7 +822,7 @@ fn header_line(mode: Mode, location: String) -> Vec<Span<'static>> {
         header.push(Span::styled(m.label(), style));
     }
     header.push(Span::styled("] ", theme::HEADER));
-    header.push(Span::styled(location, theme::HEADER));
+    header.extend(location);
     header
 }
 
@@ -789,7 +849,13 @@ mod theme {
     pub const HEADER: Style = Style::new().fg(Color::Indexed(109));
     pub const POINTER: Style = Style::new().fg(Color::Indexed(161));
     pub const MATCH: Style = Style::new().fg(Color::Indexed(108));
-    pub const DIR: Style = Style::new().fg(Color::Blue);
+    /// Directories in the column being worked in. Bright enough to read on a
+    /// black background, which the terminal's own blue is not.
+    pub const DIR: Style = Style::new().fg(Color::Indexed(75));
+    /// The side columns are context, not the subject, so they are muted and
+    /// the eye lands on the middle column.
+    pub const SIDE: Style = Style::new().fg(Color::Indexed(244));
+    pub const SIDE_DIR: Style = Style::new().fg(Color::Indexed(67));
     pub const CURRENT: Style = Style::new()
         .fg(Color::Indexed(255))
         .bg(Color::Indexed(236))
@@ -974,6 +1040,37 @@ mod tests {
         assert_eq!(inline_height(20, 19), INLINE_MIN_HEIGHT);
         assert_eq!(inline_height(10, 9), 10);
         assert_eq!(inline_height(0, 0), 1);
+    }
+
+    #[test]
+    fn fit_trims_by_display_width() {
+        assert_eq!(fit("docs", 10), "docs");
+        assert_eq!(fit("devsense.composer-php", 10), "devsense.…");
+        // Japanese names take two columns per character.
+        assert_eq!(fit("画面録画", 8), "画面録画");
+        assert_eq!(fit("画面録画", 7), "画面録…");
+        assert_eq!(fit("anything", 0), "");
+    }
+
+    #[test]
+    fn location_spans_bold_the_last_segment() {
+        let spans = location_spans(Path::new(r"C:\Users\takay\navkit"));
+        let parts: Vec<(String, bool)> = spans
+            .iter()
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style.add_modifier.contains(Modifier::BOLD),
+                )
+            })
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                (r"C:\Users\takay\".to_string(), false),
+                ("navkit".to_string(), true)
+            ]
+        );
     }
 
     #[test]
