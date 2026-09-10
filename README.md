@@ -38,12 +38,13 @@ tadoru init cmd --out C:\path\on\PATH
 | `cf [query]` | ファイルを選んでその親ディレクトリに cd |
 | `z <keywords>` | zoxide の履歴から一致する 1 件に cd（引数なしでホーム） |
 | `zi [query]` | zoxide の履歴を一覧から選んで cd |
-| `c -` | 直前に居たフォルダへ戻る（繰り返すと往復） |
+| `c -` | 直前に tadoru で移動する前に居たフォルダへ戻る（繰り返すと往復） |
 
 ## 画面
 
 Tab でモードが dirs → files → recent → favorites → browse と切り替わる。
-どのモードでも、文字を打てば絞り込み、Enter でそこへ cd、Esc で終了する。
+どのモードでも、文字を打てば絞り込み、Enter でそこへ cd。
+Esc は絞り込みを消し、空の状態でもう一度押すと終了する。Ctrl-C はいつでも終了する。
 
 | キー | 動作 |
 |---|---|
@@ -69,7 +70,7 @@ tadoru config init
 ```
 
 アイコン表示、マウスの有効・無効、一時コピーの上限、走査から外すフォルダを指定できる。
-置き場所と各項目は[画面と操作](docs/guide/screen.md)を参照。
+置き場所と各項目の意味は[画面と操作](docs/guide/screen.md)にある。
 
 ## 開発
 
@@ -89,7 +90,8 @@ PowerShell 7（`pwsh`）と bash が要る。Windows では Git Bash を使う
 cargo test --release --bin tadoru benchmark_local_tree -- --ignored --nocapture
 ```
 
-2026-09-10 の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルを
-94〜100 ms で走査し、`src` への検索更新は約5〜7 ms（3回測定）。
+手元の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルの走査が
+0.1 秒前後、`src` への検索更新が 10 ms 以下だった。実行ごとに数十パーセント動くので、
+狭い範囲を主張できる数字ではない。
 これは内部処理の測定で、プロセス起動から実端末への初回表示や入力遅延を保証する値ではない。
 画面は変化があったときだけ描き直すので、開いたまま放置しても CPU を使い続けない。
