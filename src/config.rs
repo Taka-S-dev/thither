@@ -62,6 +62,30 @@ impl Config {
     }
 }
 
+/// Writes a commented copy of the defaults for the reader to edit.
+///
+/// Nothing is written on a normal run: a tool that has not been configured
+/// should leave no trace, and every setting already has a default. Asking for
+/// the file is what creates it, which mirrors `actions init`.
+pub fn init() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = Config::path().ok_or("cannot locate the user configuration directory")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "{}: {error} (existing files are never overwritten)",
+                path.display()
+            )
+        })?;
+    std::io::Write::write_all(&mut file, include_bytes!("../examples/config/config.toml"))?;
+    Ok(path)
+}
+
 fn portable_config(exe: PathBuf) -> Option<PathBuf> {
     let dir = exe.parent()?.join("config");
     dir.is_dir().then(|| dir.join("config.toml"))
@@ -70,6 +94,49 @@ fn portable_config(exe: PathBuf) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_written_file_parses_and_matches_the_defaults() {
+        // A template that drifts from the defaults would quietly change the
+        // tool's behaviour for anyone who runs config init.
+        let text = include_str!("../examples/config/config.toml");
+        let written: Config = toml::from_str(text).expect("the template must parse");
+        let default = Config::default();
+        assert_eq!(written.icons, default.icons);
+        assert_eq!(written.mouse, default.mouse);
+        assert_eq!(written.temp_copy_max_mib, default.temp_copy_max_mib);
+        assert_eq!(written.exclude, default.exclude);
+    }
+
+    #[test]
+    fn init_writes_once_and_refuses_to_overwrite() {
+        let root = crate::testing::temp_dir().join(format!("tadoru-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Safe to set here: the tests in this file run in one process and the
+        // override is read on every call.
+        unsafe { std::env::set_var("TADORU_CONFIG_DIR", &root) };
+
+        let path = init().expect("the first run writes the file");
+        assert_eq!(path, root.join("config.toml"));
+        std::fs::write(
+            &path,
+            "icons = true
+",
+        )
+        .unwrap();
+
+        // Someone's edited settings must survive a second run.
+        let error = init().expect_err("the second run must refuse");
+        assert!(error.to_string().contains("never overwritten"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "icons = true
+"
+        );
+
+        unsafe { std::env::remove_var("TADORU_CONFIG_DIR") };
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn portable_directory_enables_configuration_even_before_files_exist() {

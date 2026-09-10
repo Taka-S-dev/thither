@@ -1,8 +1,13 @@
+# Every setting is optional. Delete a line to go back to the value shown here.
+
 # Enable only when your terminal uses a Nerd Font.
 icons = false
 
 # Click to select, wheel to move, and click mode labels to switch modes.
 mouse = true
 
-# Per-file temporary copy limit. 0 disables the action.
+# Per-file temporary copy limit in MiB. 0 disables the action.
 temp_copy_max_mib = 100
+
+# Directory names skipped at any depth while scanning.
+exclude = [".git", "node_modules", "dist", "build", "target"]

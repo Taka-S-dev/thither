@@ -32,6 +32,11 @@ enum Command {
         #[command(subcommand)]
         command: ActionsCommand,
     },
+    /// Write a commented settings file to edit. Never overwrites an existing one.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Add, remove or list pinned directories (independent of zoxide).
     Favorite {
         #[command(subcommand)]
@@ -63,6 +68,11 @@ enum Command {
 enum ActionsCommand {
     Init,
     Check,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    Init,
 }
 
 #[derive(Subcommand)]
@@ -157,6 +167,13 @@ fn main() -> ExitCode {
                     Outcome::Done
                 })
                 .map_err(Into::into)
+        }
+        Command::Config { command } => {
+            let ConfigCommand::Init = command;
+            config::init().map(|path| {
+                eprintln!("{}", path.display());
+                Outcome::Done
+            })
         }
         Command::Favorite { command } => favorite(command).map(|()| Outcome::Done),
         Command::Pick(args) => pick(args).map(|p| match p {

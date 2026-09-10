@@ -144,7 +144,15 @@ icons = true
 ユーザー設定フォルダの設定ファイルは Windows では `%APPDATA%\tadoru\config.toml`、Linux では
 `~/.config/tadoru/config.toml`（`XDG_CONFIG_HOME` 設定時はその配下）、
 macOS では `~/Library/Application Support/tadoru/config.toml`。
-ファイルがなければ作成する。
+
+設定ファイルは任意で、無ければ既定値で動く。**自動では作らない。**
+設定を何も変えていない利用者のディスクにファイルを残さないため。雛形が要るときは次を実行する。
+
+```text
+tadoru config init
+```
+
+全項目をコメント付きで書き出す。既存のファイルは上書きしない。
 
 既定は `false`。対応フォントの自動判定は行わないため、四角や文字化けが出る場合は
 `icons = false` に戻す。フォントをインストールするだけでなく、端末側で選択する必要がある。
