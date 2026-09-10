@@ -1649,6 +1649,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tadoru"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "ctrlc",
+ "directories",
+ "ignore",
+ "nucleo",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "toml",
+ "unicode-width",
+]
+
+[[package]]
 name = "termina"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1762,23 +1779,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
-]
-
-[[package]]
-name = "thither"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "ctrlc",
- "directories",
- "ignore",
- "nucleo",
- "ratatui",
- "serde",
- "serde_json",
- "toml",
- "unicode-width",
 ]
 
 [[package]]

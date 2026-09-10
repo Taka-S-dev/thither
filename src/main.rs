@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// Directory jumper for cmd.exe, PowerShell and bash.
 #[derive(Parser)]
-#[command(name = "thither", version, about)]
+#[command(name = "tadoru", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -43,7 +43,7 @@ enum Command {
         #[arg(value_enum)]
         shell: Shell,
         /// Write c, cf, z and zi as script files (.cmd or .ps1) into this directory
-        /// instead of printing. A PATH folder holding them and thither.exe needs no profile edit.
+        /// instead of printing. A PATH folder holding them and tadoru.exe needs no profile edit.
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
     },
@@ -70,7 +70,7 @@ pub struct PickArgs {
     /// What to list.
     #[arg(long, value_enum, default_value_t = Mode::Dirs)]
     pub mode: Mode,
-    /// Initial query. The THITHER_QUERY environment variable takes precedence.
+    /// Initial query. The TADORU_QUERY environment variable takes precedence.
     #[arg(long, default_value = "")]
     pub query: String,
     /// Directory to scan. Defaults to the current directory.
@@ -153,7 +153,7 @@ fn main() -> ExitCode {
         Ok(Outcome::Done) => ExitCode::SUCCESS,
         Ok(Outcome::Cancelled) => ExitCode::from(EXIT_CANCELLED),
         Err(err) => {
-            eprintln!("thither: {err}");
+            eprintln!("tadoru: {err}");
             ExitCode::from(EXIT_ERROR)
         }
     }
@@ -182,7 +182,7 @@ fn favorite(command: FavoriteCommand) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-    if let Ok(query) = std::env::var("THITHER_QUERY") {
+    if let Ok(query) = std::env::var("TADORU_QUERY") {
         args.query = query;
     }
     let root = match args.root.take() {
@@ -217,7 +217,7 @@ fn init(shell: Shell, out: Option<PathBuf>) -> Result<(), Box<dyn std::error::Er
             return Ok(());
         }
         (Shell::Bash, Some(_)) => {
-            return Err("bash needs functions, so use: eval \"$(thither init bash)\"".into());
+            return Err("bash needs functions, so use: eval \"$(tadoru init bash)\"".into());
         }
     };
     for path in written {

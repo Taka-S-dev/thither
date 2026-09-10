@@ -355,7 +355,7 @@ mod tests {
     /// Each test gets its own tree: tests run in parallel inside one process.
     fn fixture(name: &str) -> PathBuf {
         let root =
-            std::env::temp_dir().join(format!("thither-browse-{}-{name}", std::process::id()));
+            std::env::temp_dir().join(format!("tadoru-browse-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src/deep")).unwrap();
         std::fs::create_dir_all(root.join("docs")).unwrap();

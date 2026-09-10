@@ -182,7 +182,7 @@ fn to_entry(root: &Path, entry: &DirEntry, mode: Mode) -> Option<Entry> {
 }
 
 /// Recent directories in zoxide's order (highest score first). zoxide owns the
-/// history; reading its database directly would tie thither to its file format.
+/// history; reading its database directly would tie tadoru to its file format.
 pub fn recent() -> Result<Vec<PathBuf>, String> {
     let output = std::process::Command::new("zoxide")
         .args(["query", "--list"])

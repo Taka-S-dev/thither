@@ -1,7 +1,7 @@
-# thither
+# tadoru
 
-cmd.exe / PowerShell / bash で同じ操作感のディレクトリ移動ツール。
-数文字打って Enter で cd する。Rust + ratatui。
+**tadoru**（辿る）は、cmd.exe / PowerShell / bash で同じ操作感のディレクトリ移動ツール。
+数文字打って Enter で目的地へ辿り着き、階層を 1 段ずつ辿ることもできる。Rust + ratatui。
 
 cmd と PowerShell を行き来しながら、フォルダ検索・ファイル名からの移動・履歴・階層探索を
 同じ画面で使いたい人向け。開発中。
@@ -12,27 +12,27 @@ cmd と PowerShell を行き来しながら、フォルダ検索・ファイル�
 
 `c`・`cf`・browse は本体だけで動く。履歴を使う `z <keywords>`・`zi`・recent には
 別途 `zoxide` が必要（`z` の引数なしはホームへ移動）。fd・fzf は不要。
-thither 経由で移動したフォルダは、zoxide が利用できる場合に記録する。
+tadoru 経由で移動したフォルダは、zoxide が利用できる場合に記録する。
 
 ## 導入
 
 ### Windows: zip を展開するだけ
 
-リリースの zip には thither.exe と、cmd.exe 用の `c.cmd` `cf.cmd` `z.cmd` `zi.cmd`、
+リリースの zip には tadoru.exe と、cmd.exe 用の `c.cmd` `cf.cmd` `z.cmd` `zi.cmd`、
 PowerShell 用の `c.ps1` `cf.ps1` `z.ps1` `zi.ps1` が入っている。
 PATH の通ったフォルダに展開すれば、cmd.exe でも PowerShell でも設定ファイルを触らずに使える。
 
 - 展開したフォルダの中身がブロックされて .ps1 が動かないときは、そのフォルダで `Unblock-File *.ps1`
 - PowerShell の実行ポリシーが Restricted のままだと .ps1 は動かない。`RemoteSigned` にするか、下の 1 行方式を使う
 - `$PROFILE` で zoxide init している場合、`z` と `zi` は zoxide のエイリアスが優先される。
-  thither の `zi` を使いたいときは下の 1 行方式にする(エイリアスを外してから定義する)
+  tadoru の `zi` を使いたいときは下の 1 行方式にする(エイリアスを外してから定義する)
 
 手元でビルドしたときは、同じ構成を自分で作れる。
 
 ```powershell
 cargo build --release
-thither init cmd --out C:\path\on\PATH
-thither init powershell --out C:\path\on\PATH
+tadoru init cmd --out C:\path\on\PATH
+tadoru init powershell --out C:\path\on\PATH
 ```
 
 ### PowerShell: プロファイルに 1 行
@@ -40,7 +40,7 @@ thither init powershell --out C:\path\on\PATH
 `$PROFILE` の zoxide init より後に足す。
 
 ```powershell
-Invoke-Expression (& C:\path\to\thither.exe init powershell | Out-String)
+Invoke-Expression (& C:\path\to\tadoru.exe init powershell | Out-String)
 ```
 
 ### bash / zsh: rc ファイルに 1 行
@@ -48,7 +48,7 @@ Invoke-Expression (& C:\path\to\thither.exe init powershell | Out-String)
 `~/.bashrc` か `~/.zshrc` の zoxide init より後に足す。
 
 ```bash
-eval "$(thither init bash)"
+eval "$(tadoru init bash)"
 ```
 
 ## コマンド
@@ -56,7 +56,7 @@ eval "$(thither init bash)"
 | コマンド | 動作 |
 |---|---|
 | `c [query]` | カレント配下のディレクトリを選んで cd |
-| `c -` | thither で移動する直前のフォルダへ戻る（繰り返すと往復） |
+| `c -` | tadoru で移動する直前のフォルダへ戻る（繰り返すと往復） |
 | `cf [query]` | ファイルを選んでその親ディレクトリに cd |
 | `z <keywords>` | zoxide の履歴から一致する 1 件に cd(引数なしでホーム) |
 | `zi [query]` | zoxide の履歴を一覧から選んで cd |
@@ -69,7 +69,7 @@ browse は yazi 風に 1 階層ずつ歩く画面で、Right で入り、Left �
 F5 で現在の一覧とプレビューを更新できる。browse では絞り込みと選択位置を可能な限り保つ。
 履歴の取得失敗は画面に理由を表示し、F5 で再試行、Tab でほかのモードへ移動できる。
 
-本体だけ更新した場合も、シェル連携の変更を反映するには `thither init` を再実行する。
+本体だけ更新した場合も、シェル連携の変更を反映するには `tadoru init` を再実行する。
 関数を使う PowerShell / bash では、初期化を読み直すか新しいシェルを開く。
 
 ### 戻る・お気に入り
@@ -108,10 +108,10 @@ Tab で **favorites** を開き、絞り込んで Enter で移動する。zoxide
 コマンドからも管理できる（パス省略時は現在のフォルダ）。
 
 ```text
-thither favorite add
-thither favorite add "C:\work\my project"
-thither favorite remove "C:\work\my project"
-thither favorite list
+tadoru favorite add
+tadoru favorite add "C:\work\my project"
+tadoru favorite remove "C:\work\my project"
+tadoru favorite list
 ```
 
 保存先は設定ファイルと同じフォルダの `favorites.toml`。
@@ -126,10 +126,10 @@ thither favorite list
 icons = true
 ```
 
-設定先の優先順は `THITHER_CONFIG_DIR`、exe 隣の `config` フォルダ（存在する場合）、ユーザー設定フォルダ。
-ユーザー設定フォルダの設定ファイルは Windows では `%APPDATA%\thither\config.toml`、Linux では
-`~/.config/thither/config.toml`（`XDG_CONFIG_HOME` 設定時はその配下）、
-macOS では `~/Library/Application Support/thither/config.toml`。
+設定先の優先順は `TADORU_CONFIG_DIR`、exe 隣の `config` フォルダ（存在する場合）、ユーザー設定フォルダ。
+ユーザー設定フォルダの設定ファイルは Windows では `%APPDATA%\tadoru\config.toml`、Linux では
+`~/.config/tadoru/config.toml`（`XDG_CONFIG_HOME` 設定時はその配下）、
+macOS では `~/Library/Application Support/tadoru/config.toml`。
 ファイルがなければ作成する。
 
 既定は `false`。対応フォントの自動判定は行わないため、四角や文字化けが出る場合は
@@ -158,7 +158,7 @@ browse の中央列はクリックで選択し、左右の列のフォルダは�
 別のアプリを起動する操作(右クリック・Ctrl-O・Ctrl-E・detach のアクション)は画面が変わらないので、
 結果を画面下部に表示する。成功と失敗で色を変え、常時表示のキー案内とも色で区別する。
 成功の表示は 3 秒で自動的に消える。失敗は読めるように、次の操作まで残す。
-起動を依頼した時点で thither の役目は終わり、アプリが実際に出た時刻は分からないため、進捗表示は行わない。
+起動を依頼した時点で tadoru の役目は終わり、アプリが実際に出た時刻は分からないため、進捗表示は行わない。
 Ctrl＋右クリックでは、その項目のアクションメニューを開く（Ctrl-P と同じ操作）。
 左右の列でも現在のフォルダを移動せず、クリックした項目を対象にする。
 検索画面の右側プレビューも右クリック・Ctrl＋右クリックに対応する。
@@ -179,14 +179,14 @@ Space は検索文字の入力に使う。メニューを開いた時点の対�
 ファイルでは関連付けアプリで開く操作も表示する。VS Code は `code` が PATH に必要。
 ファイルの **Open temporary copy (TEMP_)** は、OS の一時フォルダ内に毎回専用フォルダを作り、
 `TEMP_元のファイル名` にコピーして既定のアプリで開く。コピー先は画面下部に表示する。
-保存先は OS の一時フォルダ内の `thither-copies`。**Open temporary copies folder** で開き、
+保存先は OS の一時フォルダ内の `tadoru-copies`。**Open temporary copies folder** で開き、
 不要なコピーを確認して手動削除できる。このメニューはフォルダ選択中にも表示する。
-以前の版が作った `thither-copy-*` は一時フォルダ直下に残る。開いているアプリへの影響を避けるため、自動移動しない。
+以前の版が作った `tadoru-copy-*` は一時フォルダ直下に残る。開いているアプリへの影響を避けるため、自動移動しない。
 一時コピーの上限は既定で **100 MiB**。`config.toml` の `temp_copy_max_mib = 100` で変更でき、
 `0` で一時コピーを無効にする。実行時に設定を読み直す。
 開始前にサイズを確認し、コピー中にファイルが大きくなっても上限を超えて書き込まない。
 上限超過・コピー失敗時は途中のコピーを削除し、アプリは起動しない。フォルダのコピーは対象外。
-原本や以前のコピーは上書きしない。thither 終了時も自動削除せず、原本への書き戻しも行わない。
+原本や以前のコピーは上書きしない。tadoru 終了時も自動削除せず、原本への書き戻しも行わない。
 残したい編集結果はアプリ側で「名前を付けて保存」する。一時フォルダは OS に削除される場合がある。
 単一ファイルのコピーなので、相対リンクや関連ファイルに依存する文書は動作が変わる場合がある。
 原本を他のアプリが更新している最中のコピーは、そのアプリで保存・更新を止めてから実行する。
@@ -200,15 +200,15 @@ Linux のパスのクリップボードコピーには Wayland で `wl-copy`、�
 このひな形はバージョン管理する。実際に使う設定や個人のお気に入りはコミットしない。
 
 ```text
-thither actions init
-thither actions check
+tadoru actions init
+tadoru actions check
 ```
 
 設定ファイルは `config.toml` と同じフォルダの **`actions.json`**。
 ポータブル運用では exe と同じ場所に `config` フォルダを作成する。
 その中の `config.toml`・`favorites.toml`・`actions.json` を使用するので、フォルダごと持ち運べる。
 `config` フォルダがない場合は従来のユーザー設定フォルダを使う。既存設定の自動コピーは行わない。
-保存先を分けたい場合は、環境変数 `THITHER_CONFIG_DIR` に設定フォルダを指定できる
+保存先を分けたい場合は、環境変数 `TADORU_CONFIG_DIR` に設定フォルダを指定できる
 （最優先。`config.toml`・`favorites.toml`・`actions.json` に共通）。
 自作スクリプトは `config/scripts` に置き、`program` を `scripts/my-tool.bat` のような相対パスにすると持ち運びやすい。
 お気に入りの登録先やコマンド内に書いた絶対パスは、別の PC へ移す際に見直す必要がある。
@@ -253,7 +253,7 @@ thither actions check
 項目の間はカンマで区切り、最後の項目の後にはカンマを付けない。JSON にはコメントを書けない。
 文字列はダブルクォートで囲む。Windows パスは `C:/tools/task.bat` または
 `C:\\tools\\task.bat` と書く。`program` と `args` は分け、引数は1個ずつ配列に入れる。
-保存後は `thither actions check` で確認し、Ctrl-P でメニューを開き直すと反映される。
+保存後は `tadoru actions check` で確認し、Ctrl-P でメニューを開き直すと反映される。
 
 `scripts/task.ps1` などの相対 `program` は設定フォルダ基準。
 `.ps1` は PowerShell 7 の `pwsh -NoProfile -File` で実行する。
@@ -262,7 +262,7 @@ Windows の `.cmd` / `.bat` も `program` に直接指定できる。
 通常の `args` の相対パスは自動変換しないため、設定側のファイルを渡すときは `{config}/scripts/...` を使う
 （PowerShell の `-File` 直後は設定フォルダ基準）。波括弧を文字として渡すときは `{{`・`}}` と書く。
 
-対象パスは環境変数 `THITHER_TARGET`、対象フォルダは `THITHER_DIR`、設定フォルダは `THITHER_CONFIG` でも参照できる。
+対象パスは環境変数 `TADORU_TARGET`、対象フォルダは `TADORU_DIR`、設定フォルダは `TADORU_CONFIG` でも参照できる。
 引数を1本のシェルコマンド文字列に結合しない。`cmd /c` や `pwsh -Command` のコードへ対象パスを埋め込む代わりに、
 スクリプトファイルと引数、またはこれらの環境変数を使う。
 `detach` は起動できたかまでを確認するので、実行結果やエラーを読みたい操作には `terminal` を使う。
@@ -281,12 +281,12 @@ Linux / macOS のネットワークマウントの自動判定には未対応。
 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` を実行する。
 統合テストは制御された外部プロセスと実際のシェルで、移動・終了コード・環境の復元を検証する。
 PowerShell 7（`pwsh`）と bash が必要。Windows では Git Bash を使う
-（標準以外の場所にある場合は `THITHER_TEST_BASH` に実行ファイルのパスを設定）。
+（標準以外の場所にある場合は `TADORU_TEST_BASH` に実行ファイルのパスを設定）。
 
-性能測定は `THITHER_BENCH_ROOT` に対象フォルダを指定し、次で再実行できる。
+性能測定は `TADORU_BENCH_ROOT` に対象フォルダを指定し、次で再実行できる。
 
 ```text
-cargo test --release --bin thither benchmark_local_tree -- --ignored --nocapture
+cargo test --release --bin tadoru benchmark_local_tree -- --ignored --nocapture
 ```
 
 2026-09-10 の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルを

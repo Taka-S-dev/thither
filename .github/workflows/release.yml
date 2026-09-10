@@ -29,20 +29,20 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="thither-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="tadoru-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           if [ "${{ matrix.archive }}" = zip ]; then
-            cp "target/${{ matrix.target }}/release/thither.exe" "$name/"
-            # The cmd and PowerShell shims look for thither.exe next to
+            cp "target/${{ matrix.target }}/release/tadoru.exe" "$name/"
+            # The cmd and PowerShell shims look for tadoru.exe next to
             # themselves first, so unpacking the zip into a PATH folder is
             # the whole install.
-            "target/${{ matrix.target }}/release/thither.exe" init cmd --out "$name"
-            "target/${{ matrix.target }}/release/thither.exe" init powershell --out "$name"
+            "target/${{ matrix.target }}/release/tadoru.exe" init cmd --out "$name"
+            "target/${{ matrix.target }}/release/tadoru.exe" init powershell --out "$name"
             7z a "$name.zip" "$name"
           else
-            cp "target/${{ matrix.target }}/release/thither" "$name/"
+            cp "target/${{ matrix.target }}/release/tadoru" "$name/"
             tar czf "$name.tar.gz" "$name"
           fi
       - uses: softprops/action-gh-release@v2
         with:
-          files: thither-*.${{ matrix.archive }}
+          files: tadoru-*.${{ matrix.archive }}

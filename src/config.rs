@@ -39,14 +39,14 @@ impl Config {
     pub fn path() -> Option<PathBuf> {
         // An explicit override also isolates subprocess tests on Windows, where
         // Known Folder APIs do not follow a replaced APPDATA environment variable.
-        if let Some(dir) = std::env::var_os("THITHER_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
+        if let Some(dir) = std::env::var_os("TADORU_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
             return Some(std::path::absolute(dir).ok()?.join("config.toml"));
         }
         if let Some(path) = std::env::current_exe().ok().and_then(portable_config) {
             return Some(path);
         }
         let base = directories::BaseDirs::new()?;
-        Some(base.config_dir().join("thither").join("config.toml"))
+        Some(base.config_dir().join("tadoru").join("config.toml"))
     }
 
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
@@ -73,9 +73,9 @@ mod tests {
 
     #[test]
     fn portable_directory_enables_configuration_even_before_files_exist() {
-        let root = std::env::temp_dir().join(format!("thither-portable-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tadoru-portable-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let exe = root.join("thither.exe");
+        let exe = root.join("tadoru.exe");
         assert_eq!(portable_config(exe.clone()), None);
         std::fs::create_dir(root.join("config")).unwrap();
         assert_eq!(portable_config(exe), Some(root.join("config/config.toml")));

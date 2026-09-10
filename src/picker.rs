@@ -490,7 +490,7 @@ impl Picker {
                             Ok(status) => format!("{name}: {status}"),
                             Err(error) => format!("{name}: {error}"),
                         };
-                        eprintln!("\n{message}\nPress Enter or Esc to return to thither.");
+                        eprintln!("\n{message}\nPress Enter or Esc to return to tadoru.");
                         let pause = wait_for_return();
                         drop(action_screen);
                         terminal = TerminalGuard::enter_at(Some(resume_top), self.config.mouse)?;
@@ -1974,8 +1974,7 @@ mod tests {
     #[test]
     fn double_click_enters_directory_and_filters_its_children() {
         use ratatui::backend::TestBackend;
-        let root =
-            std::env::temp_dir().join(format!("thither-double-click-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tadoru-double-click-{}", std::process::id()));
         std::fs::create_dir_all(root.join("C/ssl")).unwrap();
         std::fs::create_dir_all(root.join("C/other")).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Browse);
@@ -2030,8 +2029,7 @@ mod tests {
 
     #[test]
     fn switching_modes_restores_browse_location_selection_and_filter() {
-        let root =
-            std::env::temp_dir().join(format!("thither-mode-restore-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tadoru-mode-restore-{}", std::process::id()));
         std::fs::create_dir_all(root.join("ahktest")).unwrap();
         std::fs::create_dir_all(root.join("AWS")).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Browse);
@@ -2154,8 +2152,7 @@ mod tests {
     #[test]
     fn a_notice_reaches_the_screen_in_its_own_colour() {
         use ratatui::backend::TestBackend;
-        let root =
-            crate::testing::temp_dir().join(format!("thither-notice-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-notice-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
 
         for (mode, expected) in [
@@ -2187,7 +2184,7 @@ mod tests {
 
     #[test]
     fn a_click_left_over_from_the_action_menu_does_not_reach_the_list() {
-        let root = crate::testing::temp_dir().join(format!("thither-guard-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-guard-{}", std::process::id()));
         let child = root.join("child");
         std::fs::create_dir_all(child.join("grandchild")).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Browse);
@@ -2221,8 +2218,7 @@ mod tests {
 
     #[test]
     fn opening_a_path_elsewhere_always_reports_what_happened() {
-        let root =
-            crate::testing::temp_dir().join(format!("thither-report-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-report-{}", std::process::id()));
         let file = root.join("report.xlsx");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&file, "").unwrap();
@@ -2262,7 +2258,7 @@ mod tests {
     #[test]
     fn the_mode_tabs_answer_clicks_from_the_border_they_moved_to() {
         use ratatui::backend::TestBackend;
-        let root = crate::testing::temp_dir().join(format!("thither-tabs-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-tabs-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let area = Rect::new(0, 0, 100, 12);
         let mut picker = test_picker(root.clone(), Mode::Browse);
@@ -2284,7 +2280,7 @@ mod tests {
     #[test]
     fn clicking_a_step_of_the_header_path_jumps_to_that_ancestor() {
         use ratatui::backend::TestBackend;
-        let root = crate::testing::temp_dir().join(format!("thither-crumb-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-crumb-{}", std::process::id()));
         let deep = root.join("one").join("two").join("three");
         std::fs::create_dir_all(&deep).unwrap();
         let mut picker = test_picker(deep.clone(), Mode::Browse);
@@ -2315,7 +2311,7 @@ mod tests {
     #[test]
     fn header_buttons_move_back_forward_and_up_and_dim_where_they_cannot() {
         use ratatui::backend::TestBackend;
-        let root = crate::testing::temp_dir().join(format!("thither-nav-{}", std::process::id()));
+        let root = crate::testing::temp_dir().join(format!("tadoru-nav-{}", std::process::id()));
         let child = root.join("child");
         std::fs::create_dir_all(child.join("grandchild")).unwrap();
         let mut picker = test_picker(child.clone(), Mode::Browse);
@@ -2367,7 +2363,7 @@ mod tests {
     fn drawing_never_reads_a_directory_so_a_scroll_burst_costs_nothing() {
         use ratatui::backend::TestBackend;
         let root =
-            crate::testing::temp_dir().join(format!("thither-preview-idle-{}", std::process::id()));
+            crate::testing::temp_dir().join(format!("tadoru-preview-idle-{}", std::process::id()));
         std::fs::create_dir_all(root.join("child")).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Browse);
         let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
@@ -2396,7 +2392,7 @@ mod tests {
     fn search_preview_click_targets_child_without_changing_search_for_menu() {
         use ratatui::backend::TestBackend;
         let root =
-            std::env::temp_dir().join(format!("thither-preview-mouse-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tadoru-preview-mouse-{}", std::process::id()));
         let child = root.join("child");
         std::fs::create_dir_all(&child).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Dirs);
@@ -2430,7 +2426,7 @@ mod tests {
     #[test]
     fn mouse_uses_rendered_rows_and_ignores_blank_space_and_disabled_input() {
         use ratatui::backend::TestBackend;
-        let root = std::env::temp_dir().join(format!("thither-mouse-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tadoru-mouse-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         for index in 0..30 {
             std::fs::create_dir_all(root.join(format!("item-{index:02}"))).unwrap();
@@ -2547,7 +2543,7 @@ mod tests {
     #[test]
     fn escape_clears_active_filter_before_exit_and_ctrl_c_exits_immediately() {
         for mode in [Mode::Browse, Mode::Dirs] {
-            let root = std::env::temp_dir().join("thither-escape-nonexistent-root");
+            let root = std::env::temp_dir().join("tadoru-escape-nonexistent-root");
             let mut picker = test_picker(root, mode);
             picker.set_query("ss");
             let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -2575,7 +2571,7 @@ mod tests {
                 Some("zoxide query failed: fixture error"),
                 None,
             ] {
-                let root = std::env::temp_dir().join("thither-nonexistent-history-test-root");
+                let root = std::env::temp_dir().join("tadoru-nonexistent-history-test-root");
                 let mut picker = test_picker(root.clone(), Mode::Recent);
                 let mut source = Source::start(Mode::Dirs, &root, &Config::default());
                 source.finish_scan();
@@ -2614,11 +2610,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "local performance measurement; set THITHER_BENCH_ROOT and run in release mode"]
+    #[ignore = "local performance measurement; set TADORU_BENCH_ROOT and run in release mode"]
     fn benchmark_local_tree() {
         use ratatui::backend::TestBackend;
         use std::time::Instant;
-        let root = std::env::var_os("THITHER_BENCH_ROOT")
+        let root = std::env::var_os("TADORU_BENCH_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap());
         assert!(root.is_dir());
@@ -2851,9 +2847,9 @@ mod tests {
     #[test]
     fn location_spans_bold_the_last_segment() {
         #[cfg(windows)]
-        let (path, parent) = (r"C:\Users\example\thither", r"C:\Users\example");
+        let (path, parent) = (r"C:\Users\example\tadoru", r"C:\Users\example");
         #[cfg(not(windows))]
-        let (path, parent) = ("/home/example/thither", "/home/example");
+        let (path, parent) = ("/home/example/tadoru", "/home/example");
 
         // The pieces still read as the path, so nothing is lost by splitting it.
         let spans = location_spans(Path::new(path));
@@ -2866,7 +2862,7 @@ mod tests {
             .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
             .map(|s| s.content.to_string())
             .collect();
-        assert_eq!(bold, vec!["thither".to_string()]);
+        assert_eq!(bold, vec!["tadoru".to_string()]);
 
         // Every step points at the directory it names, so a click can go there.
         let targets: Vec<PathBuf> = crumb_spans(Path::new(path))
@@ -2894,7 +2890,7 @@ mod tests {
 
     #[test]
     fn list_dir_puts_directories_first() {
-        let tmp = std::env::temp_dir().join(format!("thither-preview-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tadoru-preview-{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("zeta")).unwrap();
         std::fs::write(tmp.join("Alpha.txt"), "").unwrap();
         std::fs::write(tmp.join("beta.txt"), "").unwrap();

@@ -8,7 +8,7 @@ fn main() {
         process::exit(7);
     }
     if args.first().is_some_and(|arg| arg == "pick") {
-        fs::write(env::var("TEST_QUERY_LOG").unwrap(), env::var("THITHER_QUERY").unwrap_or_default()).unwrap();
+        fs::write(env::var("TEST_QUERY_LOG").unwrap(), env::var("TADORU_QUERY").unwrap_or_default()).unwrap();
     } else if args.first().is_some_and(|arg| arg == "query") {
         fs::write(env::var("TEST_QUERY_LOG").unwrap(), args[2..].join(" ")).unwrap();
     }

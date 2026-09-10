@@ -28,11 +28,11 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = temp_dir().join(format!("thither-shell-{}-{nonce}", std::process::id()));
+        let root = temp_dir().join(format!("tadoru-shell-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let destination = root.join("日本語 space & ! % [dir]");
         std::fs::create_dir(&destination).unwrap();
-        let exe = root.join(format!("thither{}", std::env::consts::EXE_SUFFIX));
+        let exe = root.join(format!("tadoru{}", std::env::consts::EXE_SUFFIX));
         let output = Command::new("rustc")
             .args(["--edition=2024", "--crate-name", "fixture_command"])
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/command.rs"))
@@ -65,16 +65,16 @@ impl Fixture {
             .env("TEST_PATH", &self.destination)
             .env("TEST_QUERY_LOG", self.root.join("query.txt"))
             .env("TEST_EXIT", "0")
-            .env("THITHER_QUERY", "previous value")
-            .env_remove("THITHER_PREVIOUS")
+            .env("TADORU_QUERY", "previous value")
+            .env_remove("TADORU_PREVIOUS")
             .env("TEST_ROOT", &self.root)
-            .env("THITHER_CONFIG_DIR", self.root.join("config"))
+            .env("TADORU_CONFIG_DIR", self.root.join("config"))
             .env("TEST_QUERY", "日本語 ^ & | % ! space");
         command
     }
 
     fn init(&self, shell: &str, files: bool) -> String {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_thither"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tadoru"));
         command.args(["init", shell]);
         if files {
             command.arg("--out").arg(&self.root);
@@ -112,7 +112,7 @@ fn powershell_scripts_and_functions_preserve_shell_state() {
     let fixture = Fixture::new();
     fixture.init("powershell", true);
     let functions = fixture.init("powershell", false).replace(
-        &env!("CARGO_BIN_EXE_thither").replace('\'', "''"),
+        &env!("CARGO_BIN_EXE_tadoru").replace('\'', "''"),
         &fixture.exe.to_string_lossy().replace('\'', "''"),
     );
     let script = format!(
@@ -128,20 +128,20 @@ foreach ($style in 'script', 'function') {{
         foreach ($code in 0, 1, 2) {{
             Set-Location -LiteralPath $env:TEST_ROOT
             $env:TEST_EXIT = [string]$code
-            $previous = $env:THITHER_PREVIOUS
+            $previous = $env:TADORU_PREVIOUS
             if ($style -eq 'script') {{ & (Join-Path $env:TEST_ROOT "$name.ps1") $env:TEST_QUERY }}
             else {{ & $name $env:TEST_QUERY }}
             if ($LASTEXITCODE -ne $code) {{ throw "wrong status: $style $name $code => $LASTEXITCODE" }}
             $expected = if ($code -eq 0) {{ $env:TEST_PATH }} else {{ $env:TEST_ROOT }}
             if ((Get-Location).Path -ne $expected) {{ throw "wrong cwd: $style $name $code" }}
             if ($code -eq 0) {{
-                if ($env:THITHER_PREVIOUS -ne $env:TEST_ROOT) {{ throw 'previous directory not saved' }}
+                if ($env:TADORU_PREVIOUS -ne $env:TEST_ROOT) {{ throw 'previous directory not saved' }}
                 if ($style -eq 'script') {{ & (Join-Path $env:TEST_ROOT 'c.ps1') '-' }} else {{ c '-' }}
                 if ($LASTEXITCODE -ne 0 -or (Get-Location).Path -ne $env:TEST_ROOT) {{ throw 'back failed' }}
                 if ($style -eq 'script') {{ & (Join-Path $env:TEST_ROOT 'c.ps1') '-' }} else {{ c '-' }}
                 if ($LASTEXITCODE -ne 0 -or (Get-Location).Path -ne $env:TEST_PATH) {{ throw 'round trip failed' }}
-            }} elseif ($env:THITHER_PREVIOUS -ne $previous) {{ throw 'failed pick changed previous directory' }}
-            if ($env:THITHER_QUERY -ne 'previous value') {{ throw 'query was not restored' }}
+            }} elseif ($env:TADORU_PREVIOUS -ne $previous) {{ throw 'failed pick changed previous directory' }}
+            if ($env:TADORU_QUERY -ne 'previous value') {{ throw 'query was not restored' }}
             if ([Console]::OutputEncoding.CodePage -ne $encoding.CodePage) {{ throw 'encoding was not restored' }}
             if ([IO.File]::ReadAllText($env:TEST_QUERY_LOG) -ne $env:TEST_QUERY) {{ throw 'query changed' }}
         }}
@@ -174,10 +174,10 @@ call c.cmd test-query
 set "ACTUAL_EXIT=%ERRORLEVEL%"
 if not "%ACTUAL_EXIT%"=="%TEST_EXIT%" exit /b 10
 if "%TEST_EXIT%"=="0" (if not "%CD%"=="%TEST_PATH%" exit /b 11) else (if not "%CD%"=="%TEST_ROOT%" exit /b 12)
-if not "%THITHER_QUERY%"=="previous value" exit /b 13
+if not "%TADORU_QUERY%"=="previous value" exit /b 13
 for /f "tokens=2 delims=:" %%c in ('chcp') do if not "%%c"=="%BEFORE_CP%" exit /b 14
 if not "%TEST_EXIT%"=="0" exit /b 0
-if not "%THITHER_PREVIOUS%"=="%TEST_ROOT%" exit /b 15
+if not "%TADORU_PREVIOUS%"=="%TEST_ROOT%" exit /b 15
 call c.cmd -
 if errorlevel 1 exit /b 16
 if not "%CD%"=="%TEST_ROOT%" exit /b 17
@@ -243,7 +243,7 @@ exit /b 0
 fn bash_functions_preserve_shell_state() {
     let fixture = Fixture::new();
     let functions = fixture.init("bash", false).replace(
-        &env!("CARGO_BIN_EXE_thither").replace('\\', "/"),
+        &env!("CARGO_BIN_EXE_tadoru").replace('\\', "/"),
         &fixture.exe.to_string_lossy().replace('\\', "/"),
     );
     let script = format!(
@@ -256,7 +256,7 @@ for name in c cf zi z; do
     for code in 0 1 2; do
         cd -- "$TEST_ROOT" || exit 10
         export TEST_EXIT=$code
-        previous=${{THITHER_PREVIOUS-}}
+        previous=${{TADORU_PREVIOUS-}}
         "$name" "$TEST_QUERY"
         status=$?
         [ "$status" = "$code" ] || exit 11
@@ -270,16 +270,16 @@ for name in c cf zi z; do
             c - || exit 19
             [ "$PWD" = "$expected" ] || exit 20
         else
-            [ "${{THITHER_PREVIOUS-}}" = "$previous" ] || exit 21
+            [ "${{TADORU_PREVIOUS-}}" = "$previous" ] || exit 21
         fi
-        [ "$THITHER_QUERY" = 'previous value' ] || exit 13
+        [ "$TADORU_QUERY" = 'previous value' ] || exit 13
         [ "$(cat "$TEST_QUERY_LOG")" = "$TEST_QUERY" ] || exit 14
     done
 done
 "#
     );
     #[cfg(windows)]
-    let shell = std::env::var("THITHER_TEST_BASH")
+    let shell = std::env::var("TADORU_TEST_BASH")
         .unwrap_or_else(|_| "C:/Program Files/Git/bin/bash.exe".into());
     #[cfg(not(windows))]
     let shell = "bash".to_string();
@@ -311,10 +311,10 @@ done
 #[test]
 fn recent_select_one_distinguishes_errors_empty_history_and_selection() {
     let fixture = Fixture::new();
-    let mut command = fixture.command(env!("CARGO_BIN_EXE_thither"));
+    let mut command = fixture.command(env!("CARGO_BIN_EXE_tadoru"));
     command
         .args(["pick", "--mode", "recent", "--select-1"])
-        .env_remove("THITHER_QUERY")
+        .env_remove("TADORU_QUERY")
         .env("APPDATA", &fixture.root)
         .env("XDG_CONFIG_HOME", &fixture.root);
     let output = command.env("TEST_EXIT", "2").output().unwrap();
@@ -350,9 +350,9 @@ fn recent_select_one_distinguishes_errors_empty_history_and_selection() {
 fn favorites_cli_and_picker_share_persistent_storage_without_zoxide() {
     let fixture = Fixture::new();
     let command = || {
-        let mut command = fixture.command(env!("CARGO_BIN_EXE_thither"));
+        let mut command = fixture.command(env!("CARGO_BIN_EXE_tadoru"));
         command
-            .env_remove("THITHER_QUERY")
+            .env_remove("TADORU_QUERY")
             .env("APPDATA", &fixture.root)
             .env("XDG_CONFIG_HOME", &fixture.root)
             .env("HOME", &fixture.root);
@@ -401,7 +401,7 @@ fn favorites_cli_and_picker_share_persistent_storage_without_zoxide() {
 #[test]
 fn action_config_can_be_created_and_validated_without_overwriting_customizations() {
     let fixture = Fixture::new();
-    let mut command = fixture.command(env!("CARGO_BIN_EXE_thither"));
+    let mut command = fixture.command(env!("CARGO_BIN_EXE_tadoru"));
     command
         .env("APPDATA", &fixture.root)
         .env("XDG_CONFIG_HOME", &fixture.root)
@@ -420,7 +420,7 @@ fn action_config_can_be_created_and_validated_without_overwriting_customizations
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(std::fs::read(&file).unwrap(), original);
     let check_config = || {
-        let mut command = fixture.command(env!("CARGO_BIN_EXE_thither"));
+        let mut command = fixture.command(env!("CARGO_BIN_EXE_tadoru"));
         command
             .env("APPDATA", &fixture.root)
             .env("XDG_CONFIG_HOME", &fixture.root)

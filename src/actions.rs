@@ -140,9 +140,9 @@ impl Action {
         }
         command
             .current_dir(cwd)
-            .env("THITHER_TARGET", &context.path)
-            .env("THITHER_DIR", &context.dir)
-            .env("THITHER_CONFIG", &context.config);
+            .env("TADORU_TARGET", &context.path)
+            .env("TADORU_DIR", &context.dir)
+            .env("TADORU_CONFIG", &context.config);
         Ok(command)
     }
 
@@ -198,7 +198,7 @@ impl Action {
 
 /// Create an independent, writable copy. Never reuse or remove an existing directory.
 fn temporary_copies_folder(temp_root: &Path) -> Result<PathBuf> {
-    let root = temp_root.join("thither-copies");
+    let root = temp_root.join("tadoru-copies");
     fs::create_dir_all(&root)
         .map_err(|error| format!("Cannot create {}: {error}", root.display()))?;
     Ok(root)
@@ -230,7 +230,7 @@ fn temporary_copy(source: &Path, temp_root: &Path, limit: u64) -> Result<PathBuf
         .as_nanos();
     let dir = loop {
         let dir = temp_root.join(format!(
-            "thither-copy-{}-{stamp}-{}",
+            "tadoru-copy-{}-{stamp}-{}",
             std::process::id(),
             SERIAL.fetch_add(1, Ordering::Relaxed)
         ));
@@ -396,7 +396,7 @@ fn parse(text: &str) -> Result<File> {
             }
             expand(value, &dummy).map_err(|error| format!("{}: {error}", action.name))?;
         }
-        // Do not substitute filenames into shell source code. Scripts can read THITHER_TARGET.
+        // Do not substitute filenames into shell source code. Scripts can read TADORU_TARGET.
         let program_name = action
             .program
             .rsplit(['/', '\\'])
@@ -429,7 +429,7 @@ fn parse(text: &str) -> Result<File> {
                 .any(|arg| arg.contains("{path}") || arg.contains("{dir}"))
         {
             return Err(format!(
-                "{}: use a script file or THITHER_TARGET instead of substituting paths into shell code",
+                "{}: use a script file or TADORU_TARGET instead of substituting paths into shell code",
                 action.name
             ));
         }
@@ -560,9 +560,9 @@ fn copy_path(target: &Path) -> Result<()> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$ErrorActionPreference = 'Stop'; Set-Clipboard -Value $env:THITHER_TARGET",
+                "$ErrorActionPreference = 'Stop'; Set-Clipboard -Value $env:TADORU_TARGET",
             ])
-            .env("THITHER_TARGET", target)
+            .env("TADORU_TARGET", target)
             .stdin(Stdio::null())
             .creation_flags(0x08000000);
         let output = command.output().map_err(|error| error.to_string())?;
@@ -614,7 +614,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let root = crate::testing::temp_dir()
-                .join(format!("thither-action-{}-{nonce}", std::process::id()));
+                .join(format!("tadoru-action-{}-{nonce}", std::process::id()));
             fs::create_dir(&root).unwrap();
             Self(root)
         }
@@ -761,7 +761,7 @@ mod tests {
         let target = fixture.0.join("日本語 {dir} & % ! space.txt");
         fs::write(&target, "").unwrap();
         fs::write(fixture.0.join("scripts/inspect.ps1"), r#"param([string]$Target, [string]$Literal)
-[pscustomobject]@{ target=$Target; literal=$Literal; cwd=(Get-Location).Path; environment=$env:THITHER_TARGET } | ConvertTo-Json -Compress
+[pscustomobject]@{ target=$Target; literal=$Literal; cwd=(Get-Location).Path; environment=$env:TADORU_TARGET } | ConvertTo-Json -Compress
 "#).unwrap();
         for (program, args) in [
             (
@@ -793,8 +793,8 @@ mod tests {
 
     #[test]
     fn terminal_output_is_not_a_cd_destination() {
-        const MARKER: &str = "thither-action-stdout-marker";
-        if std::env::var_os("THITHER_ACTION_TEST_CHILD").is_some() {
+        const MARKER: &str = "tadoru-action-stdout-marker";
+        if std::env::var_os("TADORU_ACTION_TEST_CHILD").is_some() {
             let fixture = Fixture::new();
             fs::write(
                 fixture.0.join("output.ps1"),
@@ -811,7 +811,7 @@ mod tests {
                 "actions::tests::terminal_output_is_not_a_cd_destination",
                 "--nocapture",
             ])
-            .env("THITHER_ACTION_TEST_CHILD", "1")
+            .env("TADORU_ACTION_TEST_CHILD", "1")
             .output()
             .unwrap();
         assert!(
@@ -829,14 +829,14 @@ mod tests {
         let fixture = Fixture::new();
         let target = fixture
             .0
-            .join("日本語 & %THITHER_TEST_PAYLOAD% ! ^ {dir}.txt");
+            .join("日本語 & %TADORU_TEST_PAYLOAD% ! ^ {dir}.txt");
         fs::write(&target, "").unwrap();
         fs::write(fixture.0.join("inspect.cmd"), "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\nset \"captured=%~1\"\r\nset captured\r\nexit /b 9\r\n").unwrap();
         let action = fixture.action("inspect.cmd", vec!["{path}".into()]);
         let output = action
             .prepare(&target)
             .unwrap()
-            .env("THITHER_TEST_PAYLOAD", "EXPANDED")
+            .env("TADORU_TEST_PAYLOAD", "EXPANDED")
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(9));
