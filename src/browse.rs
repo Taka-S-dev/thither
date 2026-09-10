@@ -138,6 +138,16 @@ impl Browser {
         stack.push(visit);
     }
 
+    /// Whether a step in that direction has anywhere recorded to go.
+    ///
+    /// Only the stack is consulted. Checking that each location still exists
+    /// would touch the disk, and this is asked once per frame to decide how a
+    /// button is drawn; a step onto a deleted directory reports itself.
+    pub fn has_history(&self, forward: bool) -> bool {
+        let stack = if forward { &self.forward } else { &self.back };
+        !stack.is_empty()
+    }
+
     /// Missing locations are skipped without replacing the current directory.
     pub fn history(&mut self, forward: bool) -> bool {
         loop {

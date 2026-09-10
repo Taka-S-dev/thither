@@ -207,8 +207,28 @@ struct Picker {
     menu: Option<crate::action_menu::Menu>,
     mouse_rows: (Rect, usize, usize),
     mouse_header: Rect,
+    /// Clickable areas of the navigation buttons, empty outside browse mode.
+    mouse_nav: Vec<(Rect, Nav)>,
+    /// Column where the mode tabs start, which the buttons push to the right.
+    mouse_modes_x: u16,
     mouse_paths: Vec<(Rect, PathBuf)>,
     last_click: Option<(PathBuf, u16, u16, std::time::Instant)>,
+}
+
+/// The buttons drawn at the head of the browse header, mirroring Alt-Left,
+/// Alt-Right and Left so the same moves are reachable without the keyboard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Nav {
+    Back,
+    Forward,
+    Up,
+}
+
+impl Nav {
+    /// Glyph and the width it is drawn in, padding included.
+    const BUTTONS: [(Nav, &'static str); 3] =
+        [(Nav::Back, " ◀ "), (Nav::Forward, " ▶ "), (Nav::Up, " ▲ ")];
+    const WIDTH: u16 = 3;
 }
 
 enum Action {
@@ -241,6 +261,8 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
         menu: None,
         mouse_rows: (Rect::default(), 0, 0),
         mouse_header: Rect::default(),
+        mouse_nav: Vec::new(),
+        mouse_modes_x: 0,
         mouse_paths: Vec::new(),
         last_click: None,
     };
@@ -513,7 +535,15 @@ impl Picker {
         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && self.mouse_header.contains(position)
         {
-            let mut x = self.mouse_header.x + 1;
+            if let Some((_, nav)) = self
+                .mouse_nav
+                .iter()
+                .find(|(area, _)| area.contains(position))
+            {
+                self.navigate(*nav);
+                return;
+            }
+            let mut x = self.mouse_modes_x;
             for (index, mode) in MODE_ORDER.iter().enumerate() {
                 let end = x + mode.label().len() as u16;
                 if mouse.column >= x && mouse.column < end {
@@ -590,6 +620,25 @@ impl Picker {
             Ok(()) => format!("Opened: {}", target.display()),
             Err(error) => format!("Cannot open {}: {error}", target.display()),
         });
+    }
+
+    /// Runs a navigation button. Kept beside the key handling it mirrors, so
+    /// clicking and pressing the key cannot drift apart.
+    fn navigate(&mut self, nav: Nav) {
+        self.notice = None;
+        match nav {
+            Nav::Up => {
+                self.browser().up();
+                self.preview = None;
+            }
+            Nav::Back | Nav::Forward => {
+                if self.browser().history(nav == Nav::Forward) {
+                    self.preview = None;
+                } else {
+                    self.notice = Some("No available directory in history".into());
+                }
+            }
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Action {
@@ -779,6 +828,7 @@ impl Picker {
     fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
         self.mouse_rows = (Rect::default(), 0, 0);
         self.mouse_header = Rect::default();
+        self.mouse_nav.clear();
         self.mouse_paths.clear();
         if let Some(menu) = &mut self.menu {
             menu.render(area, frame);
@@ -847,6 +897,9 @@ impl Picker {
         .areas(inner);
 
         self.mouse_header = header_area;
+        // The search modes have nothing to step back to, so the tabs start at
+        // the first column and no navigation buttons are drawn.
+        self.mouse_modes_x = header_area.x + 1;
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled("> ", theme::PROMPT),
             Span::raw(&self.query),
@@ -1002,7 +1055,33 @@ impl Picker {
         if self.pinned.contains(&browser.cwd) {
             location.insert(0, icons::span("★ "));
         }
-        let header = header_line(Mode::Browse, location);
+        // Navigation buttons first, so the same moves the keyboard offers are
+        // reachable with the mouse; a direction with nowhere to go is dimmed
+        // and left out of the clickable areas.
+        let available = [
+            browser.has_history(false),
+            browser.has_history(true),
+            browser.cwd.parent().is_some(),
+        ];
+        self.mouse_nav.clear();
+        let mut header: Vec<Span> = Vec::new();
+        for (index, ((nav, glyph), enabled)) in Nav::BUTTONS.iter().zip(available).enumerate() {
+            let style = if enabled {
+                theme::HEADER
+            } else {
+                theme::BORDER
+            };
+            header.push(Span::styled(*glyph, style));
+            if enabled {
+                let x = header_area.x + index as u16 * Nav::WIDTH;
+                self.mouse_nav
+                    .push((Rect::new(x, header_area.y, Nav::WIDTH, 1), *nav));
+            }
+        }
+        header.push(Span::raw(" "));
+        let prefix = Nav::WIDTH * Nav::BUTTONS.len() as u16 + 1;
+        self.mouse_modes_x = header_area.x + prefix + 1;
+        header.extend(header_line(Mode::Browse, location));
         self.mouse_header = header_area;
         frame.render_widget(Paragraph::new(Line::from(header)), header_area);
 
@@ -1616,6 +1695,8 @@ mod tests {
             menu: None,
             mouse_rows: (Rect::default(), 0, 0),
             mouse_header: Rect::default(),
+            mouse_nav: Vec::new(),
+            mouse_modes_x: 0,
             mouse_paths: Vec::new(),
             last_click: None,
         }
@@ -1691,6 +1772,57 @@ mod tests {
         assert_eq!(picker.browser().selected_path(), selected);
         drop(picker);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn header_buttons_move_back_forward_and_up_and_dim_where_they_cannot() {
+        use ratatui::backend::TestBackend;
+        let root = crate::testing::temp_dir().join(format!("thither-nav-{}", std::process::id()));
+        let child = root.join("child");
+        std::fs::create_dir_all(child.join("grandchild")).unwrap();
+        let mut picker = test_picker(child.clone(), Mode::Browse);
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        let draw = |picker: &mut Picker, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| picker.render(Rect::new(0, 0, 90, 20), frame))
+                .unwrap();
+        };
+        let button = |picker: &Picker, nav: Nav| {
+            picker
+                .mouse_nav
+                .iter()
+                .find(|(_, kind)| *kind == nav)
+                .map(|(area, _)| *area)
+        };
+        let click = |picker: &mut Picker, area: Rect| {
+            picker.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            });
+        };
+
+        // Nothing visited yet, so only the step to the parent is offered.
+        draw(&mut picker, &mut terminal);
+        assert!(button(&picker, Nav::Back).is_none());
+        assert!(button(&picker, Nav::Forward).is_none());
+        let up = button(&picker, Nav::Up).expect("up is available below the root");
+        click(&mut picker, up);
+        assert_eq!(picker.browser().cwd, root);
+
+        // Having moved, back becomes available and returns to the child.
+        draw(&mut picker, &mut terminal);
+        let back = button(&picker, Nav::Back).expect("back after moving up");
+        click(&mut picker, back);
+        assert_eq!(picker.browser().cwd, child);
+
+        // And forward retraces that step.
+        draw(&mut picker, &mut terminal);
+        let forward = button(&picker, Nav::Forward).expect("forward after going back");
+        click(&mut picker, forward);
+        assert_eq!(picker.browser().cwd, root);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1845,10 +1977,12 @@ mod tests {
             .clone();
         picker.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), hit.x, hit.y));
         assert_eq!(picker.browser().cwd, sibling);
+        // The tabs no longer start at the first column: the navigation
+        // buttons sit in front of them in browse mode.
         let header = picker.mouse_header;
         picker.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            header.x + 1,
+            picker.mouse_modes_x,
             header.y,
         ));
         assert_eq!(picker.mode, Mode::Dirs);
