@@ -40,6 +40,8 @@ pub struct Definition {
     pub run: RunMode,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +80,23 @@ impl Action {
             Self::Copy => "Copy path",
             Self::Editor => "Open in VS Code",
             Self::Custom { definition, .. } => &definition.name,
+        }
+    }
+
+    /// The character that runs this action with Alt held, if it has one.
+    ///
+    /// The menu is read, not typed at, so the letters come from the names and
+    /// stay put as the list grows. Opening the copies folder is housekeeping
+    /// rather than a repeated step, so it keeps no letter of its own.
+    pub fn key(&self) -> Option<char> {
+        match self {
+            Self::Reveal => Some('f'),
+            Self::Open => Some('o'),
+            Self::TempCopy => Some('t'),
+            Self::TempFolder => None,
+            Self::Copy => Some('c'),
+            Self::Editor => Some('v'),
+            Self::Custom { definition, .. } => definition.key.as_deref().and_then(parse_key),
         }
     }
 
@@ -364,6 +383,17 @@ fn read(file: &Path, target: &Path) -> Result<Vec<Action>> {
     Ok(actions)
 }
 
+/// `alt+g` becomes `g`. Anything else is rejected so a typo is not silently
+/// dropped, and so a setting cannot claim Ctrl, which the menu already uses.
+fn parse_key(value: &str) -> Option<char> {
+    let rest = value
+        .strip_prefix("alt+")
+        .or_else(|| value.strip_prefix("Alt+"))?;
+    let mut chars = rest.chars();
+    let ch = chars.next()?.to_ascii_lowercase();
+    (chars.next().is_none() && ch.is_ascii_alphanumeric()).then_some(ch)
+}
+
 fn parse(text: &str) -> Result<File> {
     let config: File = serde_json::from_str(text).map_err(|error| error.to_string())?;
     if config.version != 1 {
@@ -374,9 +404,22 @@ fn parse(text: &str) -> Result<File> {
         dir: "dir".into(),
         config: "config".into(),
     };
+    let mut claimed: Vec<char> = Vec::new();
     for action in &config.actions {
         if action.name.trim().is_empty() || action.name.chars().any(char::is_control) {
             return Err("action name must be nonempty and on one line".into());
+        }
+        if let Some(key) = &action.key {
+            let Some(ch) = parse_key(key) else {
+                return Err(format!(
+                    "{}: key must be alt+ and one letter or digit, such as alt+g",
+                    action.name
+                ));
+            };
+            if claimed.contains(&ch) {
+                return Err(format!("{}: alt+{ch} is already used", action.name));
+            }
+            claimed.push(ch);
         }
         if action.program.trim().is_empty() || action.program.contains('\0') {
             return Err(format!("{}: program is empty or invalid", action.name));
@@ -603,6 +646,19 @@ fn copy_path(target: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+pub fn test_definition(name: &str, key: Option<&str>) -> Definition {
+    Definition {
+        name: name.into(),
+        program: "true".into(),
+        args: Vec::new(),
+        target: Target::Any,
+        run: RunMode::Detach,
+        cwd: None,
+        key: key.map(str::to_string),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -627,6 +683,7 @@ mod tests {
                     target: Target::Any,
                     run: RunMode::Terminal,
                     cwd: None,
+                    key: None,
                 },
                 config_dir: self.0.clone(),
             }
@@ -739,6 +796,26 @@ mod tests {
             expand("{{literal}} {dir}", &context).unwrap(),
             OsString::from("{literal} /parent")
         );
+    }
+
+    #[test]
+    fn a_key_must_name_alt_and_one_character_and_may_not_repeat() {
+        let one = |key: &str| {
+            format!(r#"{{"version":1,"actions":[{{"name":"a","program":"p","key":"{key}"}}]}}"#)
+        };
+        assert_eq!(parse_key("alt+g"), Some('g'));
+        assert_eq!(parse_key("Alt+G"), Some('g'));
+        assert_eq!(parse_key("alt+7"), Some('7'));
+        // Silently ignoring these would leave a key that never fires.
+        for bad in ["g", "ctrl+g", "alt+", "alt+gg", "alt++"] {
+            assert_eq!(parse_key(bad), None, "{bad}");
+            assert!(parse(&one(bad)).err().unwrap().contains("alt+"), "{bad}");
+        }
+        assert!(parse(&one("alt+g")).is_ok());
+        let twice = r#"{"version":1,"actions":[
+            {"name":"a","program":"p","key":"alt+g"},
+            {"name":"b","program":"p","key":"Alt+G"}]}"#;
+        assert!(parse(twice).err().unwrap().contains("already used"));
     }
 
     #[test]

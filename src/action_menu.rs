@@ -44,8 +44,33 @@ impl Menu {
         }
     }
 
+    /// Which action a letter runs. A setting that claims a letter takes it from
+    /// the built-in action that had it, so one key never runs two things.
+    fn owner(&self, ch: char) -> Option<usize> {
+        let ch = ch.to_ascii_lowercase();
+        self.items
+            .iter()
+            .rposition(|action| action.key() == Some(ch))
+    }
+
+    /// The letter to print beside a row, which is only the row that wins it.
+    fn shown_key(&self, index: usize) -> Option<char> {
+        let ch = self.items[index].key()?;
+        (self.owner(ch) == Some(index)).then_some(ch)
+    }
+
     pub fn handle(&mut self, key: KeyEvent) -> Decision {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Alt runs an action wherever it sits, including one the filter hides,
+        // so the key stays the same whether or not anything has been typed.
+        if key.modifiers.contains(KeyModifiers::ALT) && !ctrl {
+            if let KeyCode::Char(ch) = key.code
+                && let Some(index) = self.owner(ch)
+            {
+                return Decision::Run(Box::new(self.items[index].clone()));
+            }
+            return Decision::Stay;
+        }
         match (key.code, ctrl) {
             (KeyCode::Esc, _) | (KeyCode::Char('c' | 'p'), true) => return Decision::Close,
             (KeyCode::Enter, _) => {
@@ -126,7 +151,7 @@ impl Menu {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(" Actions ")
-            .title_bottom(" Click / Enter: run  Esc / Ctrl-P: back ");
+            .title_bottom(" Click / Enter: run  Alt+key: run directly  Esc / Ctrl-P: back ");
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let [target, prompt, warning, rows] = Layout::vertical([
@@ -165,21 +190,36 @@ impl Menu {
             .saturating_sub((rows.height as usize).saturating_sub(1));
         self.mouse_rows = rows;
         self.mouse_first = first;
-        let items: Vec<ListItem> = self
+        let shown: Vec<(usize, usize)> = self
             .visible
             .iter()
             .enumerate()
             .skip(first)
             .take(rows.height as usize)
-            .map(|(row, &index)| {
+            .map(|(row, &index)| (row, index))
+            .collect();
+        // The keys go in a column of their own on the left, so they can be read
+        // down the list. Nothing is indented when no visible action has one.
+        let keyed = shown
+            .iter()
+            .any(|&(_, index)| self.shown_key(index).is_some());
+        let items: Vec<ListItem> = shown
+            .iter()
+            .map(|&(row, index)| {
                 let action = &self.items[index];
                 let suffix = if action.run_mode() == RunMode::Terminal {
                     "  [terminal]"
                 } else {
                     ""
                 };
+                let key = match (keyed, self.shown_key(index)) {
+                    (true, Some(ch)) => format!("alt+{ch}  "),
+                    (true, None) => " ".repeat(7),
+                    (false, _) => String::new(),
+                };
                 let line = Line::from(vec![
                     Span::raw(if row == self.selected { "▌ " } else { "  " }),
+                    Span::styled(key, Style::default().fg(Color::DarkGray)),
                     Span::raw(action.name().to_string()),
                     Span::styled(suffix, Style::default().fg(Color::DarkGray)),
                 ]);
@@ -202,6 +242,77 @@ impl Menu {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn menu_of(items: Vec<Action>) -> Menu {
+        let visible = (0..items.len()).collect();
+        Menu {
+            target: PathBuf::from("selected file.txt"),
+            items,
+            query: String::new(),
+            visible,
+            selected: 0,
+            error: None,
+            mouse_rows: Rect::default(),
+            mouse_first: 0,
+        }
+    }
+
+    #[test]
+    fn an_alt_key_runs_its_action_even_while_the_filter_hides_it() {
+        let mut menu = menu_of(vec![Action::Reveal, Action::Copy]);
+        for ch in "reveal".chars() {
+            menu.handle(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert!(
+            !menu.visible.contains(&1),
+            "copy path should be filtered out"
+        );
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT)),
+            Decision::Run(action) if matches!(*action, Action::Copy)
+        ));
+        // A letter nothing claims does nothing, rather than closing or typing.
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT)),
+            Decision::Stay
+        ));
+        assert_eq!(menu.query, "reveal");
+    }
+
+    #[test]
+    fn a_configured_key_takes_the_letter_from_the_built_in_action() {
+        let custom = Action::Custom {
+            definition: crate::actions::test_definition("Compare", Some("alt+c")),
+            config_dir: PathBuf::from("config"),
+        };
+        let menu = menu_of(vec![Action::Reveal, Action::Copy, custom]);
+        assert_eq!(menu.owner('c'), Some(2));
+        assert_eq!(menu.shown_key(2), Some('c'));
+        // The built-in keeps its letter in the enum but must not advertise one
+        // it no longer runs.
+        assert_eq!(menu.shown_key(1), None);
+        assert_eq!(menu.shown_key(0), Some('f'));
+
+        let mut menu = menu;
+        let mut terminal = Terminal::new(TestBackend::new(44, 8)).unwrap();
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Columns 0 and 43 are the border.
+        let row = |y: u16| -> String {
+            (1..43)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let rows: Vec<String> = (3..6).map(row).collect();
+        // The names line up because the row without a key is padded to match.
+        assert_eq!(rows[0], "▌ alt+f  Open in file manager");
+        assert_eq!(rows[1], "         Copy path");
+        assert_eq!(rows[2], "  alt+c  Compare");
+    }
 
     #[test]
     fn alt_and_ctrl_chars_stay_out_of_the_filter() {

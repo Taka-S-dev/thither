@@ -7,14 +7,16 @@
       "program": "code",
       "args": ["--new-window", "{path}"],
       "target": "any",
-      "run": "detach"
+      "run": "detach",
+      "key": "alt+n"
     },
     {
       "name": "Git status",
       "program": "git",
       "args": ["-C", "{dir}", "status", "--short"],
       "target": "any",
-      "run": "terminal"
+      "run": "terminal",
+      "key": "alt+g"
     }
   ]
 }
