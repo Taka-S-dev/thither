@@ -369,7 +369,14 @@ impl Picker {
                 source.refresh_browse_order();
                 source.clamp_selection();
             }
-            terminal.draw(|frame| self.render(frame.area(), frame))?;
+            // Draw only once the input queue is empty. A burst of scroll
+            // events then costs one redraw at the end instead of one per
+            // notch, which is what made the picker stop answering during a
+            // fast scroll through a large directory.
+            if !event::poll(Duration::ZERO)? {
+                self.refresh_preview();
+                terminal.draw(|frame| self.render(frame.area(), frame))?;
+            }
 
             if !event::poll(POLL)? {
                 continue;
@@ -1094,14 +1101,14 @@ impl Picker {
         frame.render_widget(List::new(rows), current_area);
         self.mouse_rows = (current_area, first, shown);
 
-        // Preview column: contents of the selected directory.
+        // Preview column: contents of the selected directory. The listing is
+        // loaded in the update phase, so a burst of scroll events costs no
+        // directory reads; until it arrives the column is simply blank.
         let dir = browser.selected_path().filter(|p| p.is_dir());
-        if let Some(dir) = dir {
-            let cached = self.preview.as_ref().is_some_and(|(p, _)| p == &dir);
-            if !cached {
-                self.preview = Some((dir.clone(), list_dir(&dir)));
-            }
-            if let Some((_, names)) = &self.preview {
+        if let Some(dir) = dir
+            && let Some((_, names)) = self.preview.as_ref().filter(|(p, _)| p == &dir)
+        {
+            {
                 for (row, name) in names.iter().take(preview_area.height as usize).enumerate() {
                     self.mouse_paths.push((
                         Rect::new(
@@ -1134,8 +1141,35 @@ impl Picker {
                     .collect();
                 frame.render_widget(List::new(rows), preview_area);
             }
-        } else {
-            self.preview = None;
+        }
+    }
+
+    /// The directory whose contents the preview pane should show.
+    fn preview_target(&mut self) -> Option<PathBuf> {
+        if self.mode == Mode::Browse {
+            return self.browser().selected_path().filter(|p| p.is_dir());
+        }
+        let mode = self.mode;
+        self.source()
+            .selected_entry()
+            .map(|entry| output_path(&entry, mode))
+            .filter(|path| path.is_dir())
+    }
+
+    /// Loads the listing behind the preview pane.
+    ///
+    /// Called from the update phase and never from the drawing code, because
+    /// reading a directory is the only blocking call on that path: doing it per
+    /// frame made a fast scroll queue one directory read per notch, and the
+    /// picker stopped answering the keyboard until the queue drained.
+    fn refresh_preview(&mut self) {
+        match self.preview_target() {
+            Some(dir) => {
+                if !self.preview.as_ref().is_some_and(|(p, _)| p == &dir) {
+                    self.preview = Some((dir.clone(), list_dir(&dir)));
+                }
+            }
+            None => self.preview = None,
         }
     }
 
@@ -1158,14 +1192,10 @@ impl Picker {
         frame.render_widget(block, area);
 
         let Some(dir) = dir else {
-            self.preview = None;
             return;
         };
-        let cached = self.preview.as_ref().is_some_and(|(p, _)| p == dir);
-        if !cached {
-            self.preview = Some((dir.to_path_buf(), list_dir(dir)));
-        }
-        let Some((_, names)) = &self.preview else {
+        // Loaded in the update phase; blank for a frame while scrolling fast.
+        let Some((_, names)) = self.preview.as_ref().filter(|(p, _)| p == dir) else {
             return;
         };
         for (row, name) in names.iter().take(inner.height as usize).enumerate() {
@@ -1664,6 +1694,35 @@ mod tests {
     }
 
     #[test]
+    fn drawing_never_reads_a_directory_so_a_scroll_burst_costs_nothing() {
+        use ratatui::backend::TestBackend;
+        let root =
+            crate::testing::temp_dir().join(format!("thither-preview-idle-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        let mut picker = test_picker(root.clone(), Mode::Browse);
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+
+        // Every frame drawn while input is still queued must leave the listing
+        // alone, otherwise a fast scroll queues one directory read per notch.
+        for _ in 0..5 {
+            terminal
+                .draw(|frame| picker.render(Rect::new(0, 0, 90, 20), frame))
+                .unwrap();
+            assert!(
+                picker.preview.is_none(),
+                "rendering loaded a directory listing"
+            );
+        }
+
+        // Once the queue drains the update phase fills it in.
+        picker.refresh_preview();
+        let (path, names) = picker.preview.clone().expect("listing after refresh");
+        assert_eq!(path, root.join("child"));
+        assert!(names.is_empty(), "child is empty: {names:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn search_preview_click_targets_child_without_changing_search_for_menu() {
         use ratatui::backend::TestBackend;
         let root =
@@ -1672,6 +1731,8 @@ mod tests {
         std::fs::create_dir_all(&child).unwrap();
         let mut picker = test_picker(root.clone(), Mode::Dirs);
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        // The real loop loads the listing before drawing; rendering never does.
+        picker.preview = Some((root.clone(), list_dir(&root)));
         terminal
             .draw(|frame| picker.render_preview(Rect::new(40, 3, 35, 12), frame, Some(&root)))
             .unwrap();
@@ -1733,6 +1794,7 @@ mod tests {
         assert_eq!(picker.browser().selected, first + 3);
         picker.config.mouse = true;
         picker.set_query("item-00");
+        picker.refresh_preview();
         terminal
             .draw(|frame| picker.render(Rect::new(2, 5, 90, 15), frame))
             .unwrap();
