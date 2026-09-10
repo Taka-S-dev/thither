@@ -10,7 +10,7 @@ use ratatui::text::Span;
 pub fn span(prefix: &'static str) -> Span<'static> {
     let color = match prefix {
         "★ " => Color::Indexed(220),
-        "\u{f07b} " => Color::Indexed(75),
+        "\u{f07b} " | OPEN_FOLDER => Color::Indexed(75),
         "\u{f1c3} " => Color::Indexed(71),
         "\u{f1c2} " => Color::Indexed(75),
         "\u{f1c4} " => Color::Indexed(208),
@@ -29,6 +29,10 @@ pub fn span(prefix: &'static str) -> Span<'static> {
     };
     Span::styled(prefix, Style::new().fg(color))
 }
+
+/// The directory the listing is inside, as opposed to one merely named in it.
+/// Only the side columns can show it: in the middle column nothing is open.
+pub const OPEN_FOLDER: &str = "\u{f07c} ";
 
 pub fn prefix(name: &str, is_dir: bool, enabled: bool) -> &'static str {
     if !enabled {

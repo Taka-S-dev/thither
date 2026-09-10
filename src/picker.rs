@@ -32,11 +32,17 @@ type Error = Box<dyn std::error::Error>;
 /// Nucleo tick budget per frame. Keeps redraws under 16 ms while a scan is running.
 const TICK_MS: u64 = 10;
 const POLL: Duration = Duration::from_millis(16);
+/// How long a confirmation stays before retiring itself.
+const NOTICE_LINGER: Duration = Duration::from_secs(3);
+/// How long clicks are swallowed after the screen is replaced wholesale.
+///
+/// Opening or closing the action menu puts different things under the pointer,
+/// so a second click from a quick double tap would land on whatever moved into
+/// that spot. Roughly a double-click interval is enough to catch those without
+/// the screen feeling unresponsive.
+const CLICK_GUARD: Duration = Duration::from_millis(300);
 /// The preview pane is dropped below this terminal width.
 const MIN_WIDTH_FOR_PREVIEW: u16 = 80;
-/// Share of the screen the inline picker takes, as fzf --height 40%.
-const INLINE_HEIGHT_PERCENT: u32 = 40;
-const INLINE_MIN_HEIGHT: u16 = 12;
 /// Directory entries read for the preview. Enough to fill any pane; bounds the cost on huge folders.
 const PREVIEW_LIMIT: usize = 500;
 
@@ -157,14 +163,18 @@ impl Source {
     }
 
     /// Collect only completed workers, keeping slow history queries off the UI thread.
-    fn collect_scan_result(&mut self) {
-        if self
+    /// Says whether the walk just finished, so the caller can retire the
+    /// spinner and show the final count instead of leaving both mid-scan
+    /// until the reader happens to press something.
+    fn collect_scan_result(&mut self) -> bool {
+        let finished = self
             .scanner
             .as_ref()
-            .is_some_and(|handle| handle.is_finished())
-        {
+            .is_some_and(|handle| handle.is_finished());
+        if finished {
             self.finish_scan();
         }
+        finished
     }
 
     fn finish_scan(&mut self) {
@@ -202,6 +212,11 @@ struct Picker {
     preview: Option<(PathBuf, Vec<String>)>,
     /// Drives the spinner.
     frame_count: u32,
+    /// When a notice should disappear on its own. Confirmations say something
+    /// that already finished, so they go quiet; failures wait to be read.
+    notice_until: Option<std::time::Instant>,
+    /// Until when a click is treated as left over from the previous screen.
+    clicks_blocked_until: Option<std::time::Instant>,
     notice: Option<String>,
     pinned: crate::favorites::Index,
     menu: Option<crate::action_menu::Menu>,
@@ -209,6 +224,8 @@ struct Picker {
     mouse_header: Rect,
     /// Clickable areas of the navigation buttons, empty outside browse mode.
     mouse_nav: Vec<(Rect, Nav)>,
+    /// Clickable areas of the header path, one per step of the breadcrumb.
+    mouse_crumbs: Vec<(Rect, PathBuf)>,
     /// Column where the mode tabs start, which the buttons push to the right.
     mouse_modes_x: u16,
     mouse_paths: Vec<(Rect, PathBuf)>,
@@ -256,12 +273,15 @@ pub fn run(args: PickArgs, root: PathBuf, config: Config) -> Result<Option<PathB
         highlighter: Matcher::new(MatchConfig::DEFAULT.match_paths()),
         preview: None,
         frame_count: 0,
+        notice_until: None,
+        clicks_blocked_until: None,
         notice,
         pinned,
         menu: None,
         mouse_rows: (Rect::default(), 0, 0),
         mouse_header: Rect::default(),
         mouse_nav: Vec::new(),
+        mouse_crumbs: Vec::new(),
         mouse_modes_x: 0,
         mouse_paths: Vec::new(),
         last_click: None,
@@ -383,34 +403,61 @@ impl Picker {
 
     fn run_tui(&mut self) -> Result<Option<Entry>, Error> {
         let mut terminal = TerminalGuard::enter(self.config.mouse)?;
+        // Redraw only when something actually changed. Drawing on every pass
+        // kept a core busy for as long as the picker was open, with nothing
+        // on screen moving.
+        let mut dirty = true;
         loop {
             if self.mode != Mode::Browse {
                 let source = self.source();
-                source.collect_scan_result();
-                source.matcher.tick(TICK_MS);
+                let just_finished = source.collect_scan_result();
+                // A finished list needs no time budget; spending one delayed
+                // every keystroke behind it.
+                let busy = !source.scan_done.load(Ordering::Acquire);
+                let status = source.matcher.tick(if busy { TICK_MS } else { 0 });
                 source.refresh_browse_order();
                 source.clamp_selection();
+                // While the list is still filling the count and the spinner
+                // move on their own.
+                dirty |= just_finished || status.changed || status.running || busy;
             }
+            dirty |= self.expire_notice();
             // Draw only once the input queue is empty. A burst of scroll
             // events then costs one redraw at the end instead of one per
             // notch, which is what made the picker stop answering during a
             // fast scroll through a large directory.
-            if !event::poll(Duration::ZERO)? {
+            if !event::poll(Duration::ZERO)? && dirty {
+                // Only now, because working out what the preview should show
+                // asks the filesystem whether the selection is a directory,
+                // and nothing can have changed the answer since the last draw.
                 self.refresh_preview();
                 terminal.draw(|frame| self.render(frame.area(), frame))?;
+                dirty = false;
             }
 
             if !event::poll(POLL)? {
                 continue;
             }
+            // Anything the reader did can change what belongs on screen.
+            dirty = true;
             let key = match event::read()? {
                 Event::Mouse(mouse) => {
+                    // The menu reads its own clicks, so the guard against
+                    // presses left over from the previous screen has to be
+                    // applied before handing the event to it as well.
+                    if matches!(mouse.kind, MouseEventKind::Down(_)) && self.clicks_blocked() {
+                        continue;
+                    }
                     if self.config.mouse
                         && let Some(menu) = &mut self.menu
                     {
                         if !menu.handle_mouse(mouse) {
                             continue;
                         }
+                        // The menu is about to close under the pointer, so the
+                        // rest of a quick double tap must not reach whatever
+                        // takes its place.
+                        self.block_clicks();
                         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
                     } else {
                         self.handle_mouse(mouse);
@@ -447,14 +494,14 @@ impl Picker {
                         let pause = wait_for_return();
                         drop(action_screen);
                         terminal = TerminalGuard::enter_at(Some(resume_top), self.config.mouse)?;
-                        self.notice = Some(message);
+                        self.set_notice(message);
                         pause?;
                         self.preview = None;
                         if let Some(browser) = &mut self.browser {
                             browser.refresh();
                         }
                     } else {
-                        self.notice = Some(match action.execute_detached(&target) {
+                        self.set_notice(match action.execute_detached(&target) {
                             Ok(Some(path)) => format!("Temporary copy: {}", path.display()),
                             Ok(None) => format!(
                                 "{}: {}",
@@ -497,6 +544,12 @@ impl Picker {
         if !self.config.mouse || self.menu.is_some() {
             return;
         }
+        // A press arriving just after the screen was replaced is almost always
+        // the tail of a double tap aimed at what used to be there. Wheel and
+        // release events are harmless, so only presses are dropped.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) && self.clicks_blocked() {
+            return;
+        }
         let position = (mouse.column, mouse.row).into();
         if !matches!(
             mouse.kind,
@@ -532,9 +585,9 @@ impl Picker {
             self.preview = None;
             return;
         }
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && self.mouse_header.contains(position)
-        {
+        // The buttons and the path sit on the top border, which is outside the
+        // header row, so they are tested against their own recorded areas.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             if let Some((_, nav)) = self
                 .mouse_nav
                 .iter()
@@ -543,6 +596,25 @@ impl Picker {
                 self.navigate(*nav);
                 return;
             }
+            // A step of the path goes straight to that ancestor, which saves
+            // pressing Left once per level.
+            if let Some((_, dir)) = self
+                .mouse_crumbs
+                .iter()
+                .find(|(area, _)| area.contains(position))
+            {
+                let dir = dir.clone();
+                self.clear_notice();
+                if dir != self.browser().cwd {
+                    self.browser().navigate_to(&dir);
+                    self.preview = None;
+                }
+                return;
+            }
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.mouse_header.contains(position)
+        {
             let mut x = self.mouse_modes_x;
             for (index, mode) in MODE_ORDER.iter().enumerate() {
                 let end = x + mode.label().len() as u16;
@@ -616,16 +688,84 @@ impl Picker {
         } else {
             open::launch(&target)
         };
-        self.notice = Some(match result {
-            Ok(()) => format!("Opened: {}", target.display()),
-            Err(error) => format!("Cannot open {}: {error}", target.display()),
-        });
+        self.report_open(&target, result);
+    }
+
+    /// Says what happened to a request that hands the path to another program.
+    ///
+    /// Nothing on this screen changes when an application is launched, and it
+    /// can take seconds to appear, so without a line here the click looks
+    /// ignored and a failure is silent. The name is enough: the folder it came
+    /// from is on screen already, and the full path crowds the line out.
+    ///
+    /// There is no progress to show. Handing the path over is where this
+    /// program's part ends, so a spinner would be inventing work it cannot
+    /// see the end of.
+    fn report_open(&mut self, target: &Path, result: std::io::Result<()>) {
+        let name = target
+            .file_name()
+            .unwrap_or(target.as_os_str())
+            .to_string_lossy();
+        match result {
+            Ok(()) => self.set_transient_notice(format!("Opened: {name}")),
+            Err(error) => self.set_notice(format!("Cannot open {name}: {error}")),
+        }
+    }
+
+    /// Starts ignoring clicks, because what is under the pointer has just been
+    /// replaced and the next one is most likely a leftover from the old screen.
+    fn block_clicks(&mut self) {
+        self.clicks_blocked_until = Some(std::time::Instant::now() + CLICK_GUARD);
+        self.last_click = None;
+    }
+
+    /// Whether a button press should be discarded as belonging to the screen
+    /// that was on show a moment ago.
+    fn clicks_blocked(&mut self) -> bool {
+        match self.clicks_blocked_until {
+            Some(until) if std::time::Instant::now() < until => true,
+            Some(_) => {
+                self.clicks_blocked_until = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// A message that stays until the next action replaces it, for anything
+    /// the reader has to act on.
+    fn set_notice(&mut self, text: String) {
+        self.notice = Some(text);
+        self.notice_until = None;
+    }
+
+    /// A message that goes quiet on its own, for confirming something finished.
+    fn set_transient_notice(&mut self, text: String) {
+        self.notice = Some(text);
+        self.notice_until = Some(std::time::Instant::now() + NOTICE_LINGER);
+    }
+
+    fn clear_notice(&mut self) {
+        self.notice = None;
+        self.notice_until = None;
+    }
+
+    /// Retires a confirmation once its time is up. Says whether it did, so the
+    /// caller knows the screen needs redrawing.
+    fn expire_notice(&mut self) -> bool {
+        let due = self
+            .notice_until
+            .is_some_and(|until| std::time::Instant::now() >= until);
+        if due {
+            self.clear_notice();
+        }
+        due
     }
 
     /// Runs a navigation button. Kept beside the key handling it mirrors, so
     /// clicking and pressing the key cannot drift apart.
     fn navigate(&mut self, nav: Nav) {
-        self.notice = None;
+        self.clear_notice();
         match nav {
             Nav::Up => {
                 self.browser().up();
@@ -635,7 +775,7 @@ impl Picker {
                 if self.browser().history(nav == Nav::Forward) {
                     self.preview = None;
                 } else {
-                    self.notice = Some("No available directory in history".into());
+                    self.set_notice("No available directory in history".into());
                 }
             }
         }
@@ -657,7 +797,7 @@ impl Picker {
                 }
             };
         }
-        self.notice = None;
+        self.clear_notice();
         if self.mode == Mode::Browse
             && key.modifiers.contains(KeyModifiers::ALT)
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
@@ -665,7 +805,7 @@ impl Picker {
             if self.browser().history(key.code == KeyCode::Right) {
                 self.preview = None;
             } else {
-                self.notice = Some("No available directory in history".into());
+                self.set_notice("No available directory in history".into());
             }
             return Action::Continue;
         }
@@ -685,7 +825,7 @@ impl Picker {
                         .selected_entry()
                         .map(|entry| output_path(&entry, mode))
                 };
-                self.notice = Some(match target {
+                let message = match target {
                     None => "Nothing selected. Switch to browse to pin this folder.".into(),
                     Some(path) => match crate::favorites::path().and_then(|file| {
                         let added = crate::favorites::update(&file, &path, None)?;
@@ -702,7 +842,8 @@ impl Picker {
                         }
                         Err(error) => format!("Cannot update favorites: {error}"),
                     },
-                });
+                };
+                self.set_notice(message);
                 return Action::Continue;
             }
             (KeyCode::F(5), _) => {
@@ -741,13 +882,13 @@ impl Picker {
             // Hand the selection to the desktop and stay open, as yazi does.
             (KeyCode::Char('o'), true) => {
                 if let Some(path) = self.selected_path() {
-                    let _ = open::reveal(&path);
+                    self.report_open(&path, open::reveal(&path));
                 }
                 return Action::Continue;
             }
             (KeyCode::Char('e'), true) => {
                 if let Some(path) = self.selected_path() {
-                    let _ = open::launch(&path);
+                    self.report_open(&path, open::launch(&path));
                 }
                 return Action::Continue;
             }
@@ -821,7 +962,7 @@ impl Picker {
     fn reload_pinned(&mut self) {
         match crate::favorites::Index::load() {
             Ok(index) => self.pinned = index,
-            Err(error) => self.notice = Some(format!("Cannot load favorite markers: {error}")),
+            Err(error) => self.set_notice(format!("Cannot load favorite markers: {error}")),
         }
     }
 
@@ -829,6 +970,7 @@ impl Picker {
         self.mouse_rows = (Rect::default(), 0, 0);
         self.mouse_header = Rect::default();
         self.mouse_nav.clear();
+        self.mouse_crumbs.clear();
         self.mouse_paths.clear();
         if let Some(menu) = &mut self.menu {
             menu.render(area, frame);
@@ -860,7 +1002,9 @@ impl Picker {
             Mode::Favorites => vec![Span::styled("pinned directories", theme::HEADER)],
             _ => location_spans(&self.root),
         };
-        let header = header_line(mode, location);
+        // The tabs go in the top border and the location takes the row they
+        // used to share, which stops a long path from reading as more tabs.
+        let header = location;
 
         let source = self.sources[mode_index(mode)]
             .as_mut()
@@ -874,16 +1018,11 @@ impl Picker {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(theme::BORDER)
-            .title_bottom(
-                Line::from(Span::styled(
-                    self.notice.clone().unwrap_or_else(|| {
-                        " Tab: mode  ^P: actions  ^B: pin  F5: refresh  Enter: cd  Esc: clear/exit "
-                            .into()
-                    }),
-                    theme::BORDER,
-                ))
-                .right_aligned(),
-            );
+            .title(Line::from(mode_tabs(mode)))
+            .title_bottom(footer_line(
+                self.notice.as_deref(),
+                " Tab: mode  ^P: actions  ^B: pin  F5: refresh  Enter: cd  Esc: clear/exit ",
+            ));
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
 
@@ -896,10 +1035,9 @@ impl Picker {
         ])
         .areas(inner);
 
-        self.mouse_header = header_area;
-        // The search modes have nothing to step back to, so the tabs start at
-        // the first column and no navigation buttons are drawn.
-        self.mouse_modes_x = header_area.x + 1;
+        // The tabs live on the top border now, so that row answers their clicks.
+        self.mouse_header = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+        self.mouse_modes_x = list_area.x + 2;
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled("> ", theme::PROMPT),
             Span::raw(&self.query),
@@ -979,6 +1117,7 @@ impl Picker {
                 let marks = RowMarks {
                     icons: self.config.icons,
                     favorite: self.pinned.contains(&output_path(item.data, mode)),
+                    inside: false,
                 };
                 let icon = marks.prefix(&item.data.display, mode != Mode::Files);
                 if !icon.is_empty() {
@@ -993,22 +1132,76 @@ impl Picker {
         frame.render_widget(List::new(items), rows_area);
     }
 
+    /// The navigation buttons and the path, filling the row the mode tabs
+    /// used to share.
+    ///
+    /// A path is long and changes with every move, so it gets a row to itself
+    /// rather than trailing a list of tabs that never change. Records where
+    /// each piece lands so the buttons and every step of the path can be
+    /// clicked.
+    fn browse_location(&mut self, area: Rect) -> Vec<Span<'static>> {
+        let cwd = self.browser().cwd.clone();
+        let available = [
+            self.browser().has_history(false),
+            self.browser().has_history(true),
+            cwd.parent().is_some(),
+        ];
+        self.mouse_nav.clear();
+        self.mouse_crumbs.clear();
+
+        let mut x = area.x;
+        let limit = area.right();
+        let mut title: Vec<Span<'static>> = Vec::new();
+        for ((nav, glyph), enabled) in Nav::BUTTONS.iter().zip(available) {
+            title.push(Span::styled(
+                *glyph,
+                if enabled {
+                    theme::HEADER
+                } else {
+                    theme::BORDER
+                },
+            ));
+            if enabled && x + Nav::WIDTH <= limit {
+                self.mouse_nav
+                    .push((Rect::new(x, area.y, Nav::WIDTH, 1), *nav));
+            }
+            x += Nav::WIDTH;
+        }
+        title.push(Span::raw(" "));
+        x += 1;
+        if self.pinned.contains(&cwd) {
+            let star = icons::span("★ ");
+            x += star.content.width() as u16;
+            title.push(star);
+        }
+        for (span, dir) in crumb_spans(&cwd) {
+            let width = span.content.width() as u16;
+            // A path too long for the row is clipped, and the part that is not
+            // drawn must not answer clicks.
+            if let Some(dir) = dir
+                && x + width <= limit
+            {
+                self.mouse_crumbs
+                    .push((Rect::new(x, area.y, width, 1), dir));
+            }
+            x += width;
+            title.push(span);
+        }
+        title.push(Span::raw(" "));
+        title
+    }
+
     /// Three columns like yazi: parent, current directory, selected entry's contents.
     fn render_browse(&mut self, area: Rect, frame: &mut ratatui::Frame) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(theme::BORDER)
-            .title_bottom(
-                Line::from(Span::styled(
-                    self.notice.clone().unwrap_or_else(|| {
-                        " Left: up  Right: enter  Alt-Left/Right: history  Tab: mode  ^P: actions  ^B: pin  Enter: cd "
-                            .into()
-                    }),
-                    theme::BORDER,
-                ))
-                .right_aligned(),
-            );
+            .title(Line::from(mode_tabs(Mode::Browse)))
+            .title_bottom(footer_line(
+                self.notice.as_deref(),
+                " Left: up  Right: enter  Alt-Left/Right: history  Tab: mode  ^P: actions  ^B: pin  Enter: cd ",
+            ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -1020,18 +1213,20 @@ impl Picker {
         ])
         .areas(inner);
 
+        // Built before the listing is borrowed, and drawn into the row the mode
+        // tabs vacated when they moved to the border.
+        self.mouse_header = Rect::new(area.x, area.y, area.width, 1);
+        self.mouse_modes_x = area.x + 2;
+        let location = self.browse_location(header_area);
+
         let root = self.root.clone();
         let browser = self.browser.get_or_insert_with(|| Browser::new(root));
         let filter = browser.filter.clone();
-        let folder = browser
-            .cwd
-            .file_name()
-            .unwrap_or(browser.cwd.as_os_str())
-            .to_string_lossy();
+        // What the filter applies to is the folder named on the path row just
+        // below, so repeating it here only crowded the line being typed on.
         let prompt = Paragraph::new(Line::from(vec![
             Span::styled("> ", theme::PROMPT),
             Span::raw(filter.as_str()),
-            Span::styled(format!("   [Filter: {folder}]"), theme::HEADER),
         ]));
         frame.render_widget(prompt, prompt_area);
         if prompt_area.width > 0 && prompt_area.height > 0 {
@@ -1051,39 +1246,7 @@ impl Picker {
             Span::styled("─".repeat(rule_width), theme::BORDER),
         ]));
         frame.render_widget(info, info_area);
-        let mut location = location_spans(&browser.cwd);
-        if self.pinned.contains(&browser.cwd) {
-            location.insert(0, icons::span("★ "));
-        }
-        // Navigation buttons first, so the same moves the keyboard offers are
-        // reachable with the mouse; a direction with nowhere to go is dimmed
-        // and left out of the clickable areas.
-        let available = [
-            browser.has_history(false),
-            browser.has_history(true),
-            browser.cwd.parent().is_some(),
-        ];
-        self.mouse_nav.clear();
-        let mut header: Vec<Span> = Vec::new();
-        for (index, ((nav, glyph), enabled)) in Nav::BUTTONS.iter().zip(available).enumerate() {
-            let style = if enabled {
-                theme::HEADER
-            } else {
-                theme::BORDER
-            };
-            header.push(Span::styled(*glyph, style));
-            if enabled {
-                let x = header_area.x + index as u16 * Nav::WIDTH;
-                self.mouse_nav
-                    .push((Rect::new(x, header_area.y, Nav::WIDTH, 1), *nav));
-            }
-        }
-        header.push(Span::raw(" "));
-        let prefix = Nav::WIDTH * Nav::BUTTONS.len() as u16 + 1;
-        self.mouse_modes_x = header_area.x + prefix + 1;
-        header.extend(header_line(Mode::Browse, location));
-        self.mouse_header = header_area;
-        frame.render_widget(Paragraph::new(Line::from(header)), header_area);
+        frame.render_widget(Paragraph::new(Line::from(location)), header_area);
 
         // The middle column is the subject, so it gets the most room.
         let [parent_area, sep1, current_area, sep2, preview_area] = Layout::horizontal([
@@ -1104,10 +1267,7 @@ impl Picker {
         // Parent column: the directory we are in is marked.
         if let Some((items, here)) = browser.parent_listing() {
             let height = parent_area.height as usize;
-            let first = here
-                .unwrap_or(0)
-                .saturating_sub(height.saturating_sub(1))
-                .min(items.len().saturating_sub(height));
+            let first = centred_scroll(here.unwrap_or(0), items.len(), height);
             let rows: Vec<ListItem> = items
                 .iter()
                 .enumerate()
@@ -1128,6 +1288,9 @@ impl Picker {
                                 && browser.cwd.parent().is_some_and(|parent| {
                                     self.pinned.contains(&parent.join(&item.name))
                                 }),
+                            // This row is the directory the middle column is
+                            // listing, and the only one on screen truly open.
+                            inside: current,
                         },
                     )
                 })
@@ -1173,6 +1336,7 @@ impl Picker {
                         icons: self.config.icons,
                         favorite: item.is_dir
                             && self.pinned.contains(&browser.cwd.join(&item.name)),
+                        inside: false,
                     },
                 )
             })
@@ -1214,6 +1378,7 @@ impl Picker {
                             RowMarks {
                                 icons: self.config.icons,
                                 favorite: is_dir && self.pinned.contains(&dir.join(n)),
+                                inside: false,
                             },
                         )
                     })
@@ -1241,14 +1406,17 @@ impl Picker {
     /// reading a directory is the only blocking call on that path: doing it per
     /// frame made a fast scroll queue one directory read per notch, and the
     /// picker stopped answering the keyboard until the queue drained.
-    fn refresh_preview(&mut self) {
+    /// Says whether the listing changed, so the caller knows to redraw.
+    fn refresh_preview(&mut self) -> bool {
         match self.preview_target() {
             Some(dir) => {
-                if !self.preview.as_ref().is_some_and(|(p, _)| p == &dir) {
-                    self.preview = Some((dir.clone(), list_dir(&dir)));
+                if self.preview.as_ref().is_some_and(|(p, _)| p == &dir) {
+                    return false;
                 }
+                self.preview = Some((dir.clone(), list_dir(&dir)));
+                true
             }
-            None => self.preview = None,
+            None => self.preview.take().is_some(),
         }
     }
 
@@ -1298,6 +1466,7 @@ impl Picker {
                 let marks = RowMarks {
                     icons: self.config.icons,
                     favorite: is_dir && self.pinned.contains(&dir.join(n)),
+                    inside: false,
                 };
                 let icon = marks.prefix(n, is_dir);
                 ListItem::new(
@@ -1337,12 +1506,17 @@ fn fit(text: &str, width: usize) -> String {
 struct RowMarks {
     icons: bool,
     favorite: bool,
+    /// The row stands for the directory the listing is inside, which is the
+    /// only folder on screen that is actually open.
+    inside: bool,
 }
 
 impl RowMarks {
     fn prefix(self, name: &str, is_dir: bool) -> &'static str {
         if self.favorite {
             "★ "
+        } else if self.inside && is_dir && self.icons {
+            icons::OPEN_FOLDER
         } else {
             icons::prefix(name, is_dir, self.icons)
         }
@@ -1364,38 +1538,117 @@ fn browse_row(
     let text = fit(label, width.saturating_sub(2 + icon.width()));
     let len = text.chars().count() as u32;
     let kept: Vec<u32> = hits.iter().copied().filter(|&i| i < len).collect();
-    let style = match (current, is_dir, side) {
-        (true, _, _) => theme::CURRENT,
+    // Only the focused column gets a background and a pointer. A side column
+    // still marks where the middle one sits, but quietly, so which list the
+    // cursor is in can be read at a glance.
+    let focused = current && !side;
+    let style = match (current, side, is_dir) {
+        (true, false, _) => theme::CURRENT,
+        (true, true, _) => theme::HERE,
         (_, true, true) => theme::SIDE_DIR,
-        (_, true, false) => theme::DIR,
-        (_, false, true) => theme::SIDE,
+        (_, false, true) => theme::DIR,
+        (_, true, false) => theme::SIDE,
         (_, false, false) => Style::default(),
     };
-    let mut line = highlight_line(current, &text, &kept);
+    let mut line = highlight_line(focused, &text, &kept);
     if !icon.is_empty() {
         line.spans.insert(1, icons::span(icon));
     }
     ListItem::new(line.style(style))
 }
 
-/// The path with its last segment in bold, so the folder in the middle column
-/// can be found in the header at a glance.
-fn location_spans(path: &Path) -> Vec<Span<'static>> {
-    let full = path.display().to_string();
-    match path.file_name().map(|n| n.to_string_lossy().into_owned()) {
-        Some(name) if full.ends_with(&name) => {
-            let head = full[..full.len() - name.len()].to_string();
-            vec![
-                Span::styled(head, theme::HEADER),
-                Span::styled(name, theme::HEADER.add_modifier(Modifier::BOLD)),
-            ]
+/// The bottom border: a notice when there is one, otherwise the key hints.
+///
+/// A notice is drawn in its own colour so it cannot be mistaken for the hints
+/// that are always there, and failures are marked apart from confirmations.
+fn footer_line(notice: Option<&str>, hints: &'static str) -> Line<'static> {
+    match notice {
+        Some(text) => {
+            let failed = text.starts_with("Cannot") || text.starts_with("No ");
+            let style = if failed {
+                theme::NOTICE_BAD
+            } else {
+                theme::NOTICE
+            };
+            Line::from(Span::styled(format!(" {text} "), style)).right_aligned()
         }
-        _ => vec![Span::styled(full, theme::HEADER)],
+        None => Line::from(Span::styled(hints, theme::BORDER)).right_aligned(),
     }
 }
 
-/// Mode tabs followed by the location, with the active mode underlined.
-fn header_line(mode: Mode, location: Vec<Span<'static>>) -> Vec<Span<'static>> {
+/// First visible row that puts `focus` in the middle of a `height`-tall window.
+///
+/// The parent column is context, so the folders either side of the current one
+/// matter as much as the row itself; pinning it to the last line hid them and
+/// left the marker against the bottom edge. Near the ends of the list the
+/// window stops rather than scrolling past them.
+fn centred_scroll(focus: usize, len: usize, height: usize) -> usize {
+    if height == 0 || len <= height {
+        return 0;
+    }
+    focus
+        .saturating_sub(height / 2)
+        .min(len.saturating_sub(height))
+}
+
+/// The path with its last segment in bold, so the folder in the middle column
+/// can be found in the header at a glance.
+fn location_spans(path: &Path) -> Vec<Span<'static>> {
+    crumb_spans(path)
+        .into_iter()
+        .map(|(span, _)| span)
+        .collect()
+}
+
+/// Each step of `path` paired with the directory it stands for, root first.
+fn breadcrumb(path: &Path) -> Vec<(String, PathBuf)> {
+    let mut dirs: Vec<&Path> = path.ancestors().collect();
+    dirs.reverse();
+    dirs.into_iter()
+        .map(|dir| {
+            let text = match dir.file_name() {
+                Some(name) => name.to_string_lossy().into_owned(),
+                // The root has no file name, so it prints whole: "C:\" or "/".
+                None => dir.display().to_string(),
+            };
+            (text, dir.to_path_buf())
+        })
+        .collect()
+}
+
+/// The path as spans, each paired with the directory it leads to.
+///
+/// The trailing segment is the one being looked at, so it is white and bold
+/// while the trail above it stays grey; a path that reads as one flat string
+/// is easy to overlook next to the mode tabs.
+fn crumb_spans(path: &Path) -> Vec<(Span<'static>, Option<PathBuf>)> {
+    let crumbs = breadcrumb(path);
+    let last = crumbs.len().saturating_sub(1);
+    let mut spans: Vec<(Span<'static>, Option<PathBuf>)> = Vec::new();
+    for (index, (text, dir)) in crumbs.into_iter().enumerate() {
+        if index > 0
+            && !spans
+                .last()
+                .is_some_and(|(span, _)| span.content.ends_with(std::path::MAIN_SEPARATOR))
+        {
+            spans.push((
+                Span::styled(std::path::MAIN_SEPARATOR.to_string(), theme::TRAIL),
+                None,
+            ));
+        }
+        let style = if index == last {
+            theme::HERE_PATH
+        } else {
+            theme::TRAIL
+        };
+        spans.push((Span::styled(text, style), Some(dir)));
+    }
+    spans
+}
+
+/// Just the `[dirs|files|...]` part, so a caller that needs to know where the
+/// path begins can measure it.
+fn mode_tabs(mode: Mode) -> Vec<Span<'static>> {
     let mut header: Vec<Span> = vec![Span::styled("[", theme::HEADER)];
     for (i, &m) in MODE_ORDER.iter().enumerate() {
         if i > 0 {
@@ -1409,7 +1662,6 @@ fn header_line(mode: Mode, location: Vec<Span<'static>>) -> Vec<Span<'static>> {
         header.push(Span::styled(m.label(), style));
     }
     header.push(Span::styled("] ", theme::HEADER));
-    header.extend(location);
     header
 }
 
@@ -1443,6 +1695,28 @@ mod theme {
     /// the eye lands on the middle column.
     pub const SIDE: Style = Style::new().fg(Color::Indexed(244));
     pub const SIDE_DIR: Style = Style::new().fg(Color::Indexed(67));
+    /// Marks the middle column's directory inside a side column. It borrows the
+    /// pointer's colour so it reads as related to the cursor, and stands out
+    /// against a column of blue folders; the background and the bar stay with
+    /// the focused column, which is what says where the cursor actually is.
+    pub const HERE: Style = Style::new()
+        .fg(Color::Indexed(161))
+        .add_modifier(Modifier::BOLD);
+    /// The ancestors in the header path, kept quiet so the folder in view reads
+    /// as the subject rather than as more of the mode tabs beside it.
+    pub const TRAIL: Style = Style::new().fg(Color::Indexed(244));
+    /// A message about something that just happened. The key hints it replaces
+    /// are permanent furniture drawn in the border colour, so a notice left in
+    /// that colour reads as furniture too and goes unnoticed.
+    pub const NOTICE: Style = Style::new()
+        .fg(Color::Indexed(109))
+        .add_modifier(Modifier::BOLD);
+    pub const NOTICE_BAD: Style = Style::new()
+        .fg(Color::Indexed(161))
+        .add_modifier(Modifier::BOLD);
+    pub const HERE_PATH: Style = Style::new()
+        .fg(Color::Indexed(255))
+        .add_modifier(Modifier::BOLD);
     pub const CURRENT: Style = Style::new()
         .fg(Color::Indexed(255))
         .bg(Color::Indexed(236))
@@ -1484,17 +1758,14 @@ fn highlight_line(current: bool, text: &str, indices: &[u32]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Everything from the cursor row to the bottom of the screen, so a fresh
-/// window is filled instead of leaving the lower part empty. Near the bottom
-/// the picker still takes at least 40% (and the minimum), scrolling the
-/// history up as fzf --height does.
-fn inline_height(rows: u16, cursor_row: u16) -> u16 {
-    let below_cursor = rows.saturating_sub(cursor_row);
-    let floor = (u32::from(rows) * INLINE_HEIGHT_PERCENT / 100) as u16;
-    below_cursor
-        .max(floor)
-        .max(INLINE_MIN_HEIGHT)
-        .min(rows.max(1))
+/// The whole window.
+///
+/// Sizing to the space below the cursor left the shell history at the top, so
+/// a few lines of it cost the listing rows it could have used. Taking the full
+/// height scrolls that history up instead, as `fzf --height 100%` does, and it
+/// is still in the scrollback afterwards.
+fn inline_height(rows: u16) -> u16 {
+    rows.max(1)
 }
 
 /// The picker draws on stderr so stdout stays clean for the selected path.
@@ -1548,24 +1819,20 @@ struct TerminalGuard {
 }
 
 impl TerminalGuard {
-    /// Opens an inline viewport at the bottom of the screen, like fzf --height,
-    /// so the command history above stays visible.
+    /// Opens a viewport over the whole window, like fzf --height 100%, so the
+    /// shell history scrolls up rather than eating rows the listing could use.
     fn enter(mouse: bool) -> Result<Self, Error> {
         Self::enter_at(None, mouse)
     }
 
     fn enter_at(top: Option<u16>, mouse: bool) -> Result<Self, Error> {
         let (_, rows) = crossterm::terminal::size()?;
-        let cursor_row = match top {
-            Some(top) => {
-                let top = top.min(rows.saturating_sub(1));
-                crossterm::execute!(io::stderr(), crossterm::cursor::MoveTo(0, top))?;
-                top
-            }
-            None => crossterm::cursor::position().unwrap_or((0, rows)).1,
-        };
+        if let Some(top) = top {
+            let top = top.min(rows.saturating_sub(1));
+            crossterm::execute!(io::stderr(), crossterm::cursor::MoveTo(0, top))?;
+        }
         enable_raw_mode()?;
-        match Self::open(rows, cursor_row) {
+        match Self::open(rows) {
             Ok(terminal) => {
                 let guard = Self { terminal, mouse };
                 if mouse {
@@ -1580,9 +1847,9 @@ impl TerminalGuard {
         }
     }
 
-    /// Creates an inline viewport starting at `top`, sized for a `rows`-tall screen.
-    fn open(rows: u16, top: u16) -> Result<Terminal<CrosstermBackend<io::Stderr>>, Error> {
-        let height = inline_height(rows, top);
+    /// Creates a viewport covering a `rows`-tall screen.
+    fn open(rows: u16) -> Result<Terminal<CrosstermBackend<io::Stderr>>, Error> {
+        let height = inline_height(rows);
         let terminal = Terminal::with_options(
             CrosstermBackend::new(io::stderr()),
             TerminalOptions {
@@ -1596,11 +1863,9 @@ impl TerminalGuard {
     /// height is fixed when it is created, so growing the window would otherwise
     /// leave the extra rows unused, and shrinking it would draw off screen.
     fn reopen(&mut self, rows: u16) -> Result<(), Error> {
-        let top = self.terminal.get_frame().area().y;
-        let top = top.min(rows.saturating_sub(1));
         self.terminal.clear()?;
-        crossterm::execute!(io::stderr(), crossterm::cursor::MoveTo(0, top))?;
-        self.terminal = Self::open(rows, top)?;
+        crossterm::execute!(io::stderr(), crossterm::cursor::MoveTo(0, 0))?;
+        self.terminal = Self::open(rows)?;
         Ok(())
     }
 }
@@ -1647,6 +1912,7 @@ mod tests {
                 let marks = RowMarks {
                     icons,
                     favorite: true,
+                    inside: false,
                 };
                 let item = browse_row("日本語", true, current, false, &[1], 24, marks);
                 List::new(vec![item]).render(area, &mut buffer);
@@ -1690,12 +1956,15 @@ mod tests {
             highlighter: Matcher::new(MatchConfig::DEFAULT.match_paths()),
             preview: None,
             frame_count: 0,
+            notice_until: None,
+            clicks_blocked_until: None,
             notice: None,
             pinned: crate::favorites::Index::default(),
             menu: None,
             mouse_rows: (Rect::default(), 0, 0),
             mouse_header: Rect::default(),
             mouse_nav: Vec::new(),
+            mouse_crumbs: Vec::new(),
             mouse_modes_x: 0,
             mouse_paths: Vec::new(),
             last_click: None,
@@ -1747,7 +2016,14 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(screen.contains("[Filter: C]"));
+        // Which folder is being filtered is still on screen, once: the path
+        // row names it, so the prompt no longer repeats it.
+        assert!(!screen.contains("[Filter:"), "the label came back");
+        let shown = root.join("C");
+        assert!(
+            screen.contains(&shown.display().to_string()),
+            "the path row should name the folder being filtered"
+        );
         drop(picker);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1772,6 +2048,268 @@ mod tests {
         assert_eq!(picker.browser().selected_path(), selected);
         drop(picker);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_parent_column_keeps_the_current_folder_off_the_edges() {
+        // Short lists never scroll.
+        assert_eq!(centred_scroll(0, 3, 10), 0);
+        assert_eq!(centred_scroll(2, 3, 10), 0);
+        // In a long list the row sits in the middle, with context either side.
+        assert_eq!(centred_scroll(20, 100, 10), 15);
+        // Near the start and the end the window stops instead of overshooting.
+        assert_eq!(centred_scroll(1, 100, 10), 0);
+        assert_eq!(centred_scroll(99, 100, 10), 90);
+        // A zero-height column asks for nothing.
+        assert_eq!(centred_scroll(5, 100, 0), 0);
+    }
+
+    #[test]
+    fn only_the_directory_being_listed_gets_the_open_folder_icon() {
+        let marks = |inside| RowMarks {
+            icons: true,
+            favorite: false,
+            inside,
+        };
+        // The folder the middle column is listing is the one actually open.
+        assert_eq!(marks(true).prefix("work", true), icons::OPEN_FOLDER);
+        // Everything else, selected or not, is just a folder named in a list.
+        assert_ne!(marks(false).prefix("work", true), icons::OPEN_FOLDER);
+        // Files are unaffected, and a pin still wins over both.
+        assert_ne!(marks(true).prefix("notes.txt", false), icons::OPEN_FOLDER);
+        assert_eq!(
+            RowMarks {
+                icons: true,
+                favorite: true,
+                inside: true,
+            }
+            .prefix("work", true),
+            "★ "
+        );
+    }
+
+    #[test]
+    fn only_the_focused_column_carries_the_selection_background() {
+        let marks = RowMarks {
+            icons: false,
+            favorite: false,
+            inside: false,
+        };
+        use ratatui::buffer::Buffer;
+        use ratatui::widgets::Widget;
+
+        // (background of the name cell, pointer glyph) as actually drawn.
+        let drawn = |current: bool, side: bool| {
+            let area = Rect::new(0, 0, 20, 1);
+            let mut buffer = Buffer::empty(area);
+            let item = browse_row("work", true, current, side, &[], 20, marks);
+            List::new(vec![item]).render(area, &mut buffer);
+            (
+                buffer[(4, 0)].bg,
+                buffer[(0, 0)].symbol().to_string(),
+                buffer[(4, 0)].fg,
+            )
+        };
+
+        // The middle column owns the cursor: a background and the pointer bar.
+        let (bg, pointer, _) = drawn(true, false);
+        assert_eq!(bg, Color::Indexed(236));
+        assert_eq!(pointer, "▌");
+
+        // A side column marks the same directory without either, so the two
+        // highlighted rows on screen cannot be mistaken for each other.
+        let (bg, pointer, fg) = drawn(true, true);
+        assert_eq!(bg, Color::Reset);
+        assert_eq!(pointer, " ");
+        assert_eq!(fg, theme::HERE.fg.unwrap());
+
+        // An ordinary side row stays muted.
+        let (bg, _, fg) = drawn(false, true);
+        assert_eq!(bg, Color::Reset);
+        assert_eq!(fg, theme::SIDE_DIR.fg.unwrap());
+    }
+
+    #[test]
+    fn a_notice_is_told_apart_from_the_permanent_key_hints() {
+        const HINTS: &str = " Tab: mode  Enter: cd ";
+        let style_of = |line: &Line<'static>| line.spans[0].style;
+
+        // With nothing to say the bar is furniture, drawn like the border.
+        let idle = footer_line(None, HINTS);
+        assert_eq!(style_of(&idle), theme::BORDER);
+        assert_eq!(idle.spans[0].content, HINTS);
+
+        // A confirmation has to stand out from that furniture, or it reads as
+        // more of it and goes unnoticed.
+        let done = footer_line(Some("Opened: report.xlsx"), HINTS);
+        assert_eq!(style_of(&done), theme::NOTICE);
+        assert_ne!(style_of(&done), theme::BORDER);
+
+        // A failure is marked apart from a confirmation again.
+        for bad in ["Cannot open x: denied", "No available directory in history"] {
+            assert_eq!(style_of(&footer_line(Some(bad), HINTS)), theme::NOTICE_BAD);
+        }
+    }
+
+    #[test]
+    fn a_notice_reaches_the_screen_in_its_own_colour() {
+        use ratatui::backend::TestBackend;
+        let root =
+            crate::testing::temp_dir().join(format!("thither-notice-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        for (mode, expected) in [
+            (Mode::Browse, theme::NOTICE_BAD),
+            (Mode::Dirs, theme::NOTICE_BAD),
+        ] {
+            let mut picker = test_picker(root.clone(), mode);
+            picker.notice = Some("Cannot open it: denied".into());
+            let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+            terminal
+                .draw(|frame| picker.render(Rect::new(0, 0, 90, 12), frame))
+                .unwrap();
+
+            // Find the message on the bottom border and check it is not drawn
+            // in the same colour as the key hints it replaced.
+            let buffer = terminal.backend().buffer();
+            let bottom = 11;
+            // Count in columns, not bytes: the border glyphs are multi-byte.
+            let cells: Vec<&str> = (0..90).map(|x| buffer[(x, bottom)].symbol()).collect();
+            let at = (0..cells.len() - 6)
+                .find(|&x| cells[x..x + 6].concat() == "Cannot")
+                .unwrap_or_else(|| panic!("{mode:?}: {}", cells.concat()))
+                as u16;
+            assert_eq!(buffer[(at, bottom)].fg, expected.fg.unwrap(), "{mode:?}");
+            assert_ne!(buffer[(at, bottom)].fg, theme::BORDER.fg.unwrap());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_click_left_over_from_the_action_menu_does_not_reach_the_list() {
+        let root = crate::testing::temp_dir().join(format!("thither-guard-{}", std::process::id()));
+        let child = root.join("child");
+        std::fs::create_dir_all(child.join("grandchild")).unwrap();
+        let mut picker = test_picker(root.clone(), Mode::Browse);
+        picker.browser().move_selection(0);
+        let start = picker.browser().cwd.clone();
+        picker.mouse_rows = (Rect::new(0, 0, 20, 5), 0, 1);
+        let click = |x, y| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Picking from the menu closes it under the pointer, so the rest of a
+        // quick double tap must not land on whatever moved into that spot.
+        picker.block_clicks();
+        picker.handle_mouse(click(0, 0));
+        assert_eq!(picker.browser().cwd, start, "a leftover click got through");
+
+        // The wheel is not a press and keeps working.
+        picker.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            ..click(0, 0)
+        });
+
+        // Once the moment has passed, clicks count again.
+        picker.clicks_blocked_until = Some(std::time::Instant::now());
+        assert!(!picker.clicks_blocked());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn opening_a_path_elsewhere_always_reports_what_happened() {
+        let root =
+            crate::testing::temp_dir().join(format!("thither-report-{}", std::process::id()));
+        let file = root.join("report.xlsx");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let mut picker = test_picker(root.clone(), Mode::Browse);
+
+        // Launching an application changes nothing on this screen, so both
+        // outcomes have to be said out loud, by name rather than by full path.
+        picker.report_open(&file, Ok(()));
+        assert_eq!(picker.notice.as_deref(), Some("Opened: report.xlsx"));
+
+        // A confirmation is about something already finished, so it retires
+        // itself rather than sitting on the screen.
+        assert!(picker.notice_until.is_some());
+        picker.expire_notice();
+        assert!(picker.notice.is_some(), "it should not vanish immediately");
+        picker.notice_until = Some(std::time::Instant::now());
+        picker.expire_notice();
+        assert!(
+            picker.notice.is_none(),
+            "it should retire once its time is up"
+        );
+
+        // A failure has to be read, so it waits for the next action instead.
+        picker.report_open(
+            &file,
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+        );
+        let notice = picker.notice.clone().unwrap();
+        assert!(notice.starts_with("Cannot open report.xlsx"), "{notice}");
+        assert!(notice.contains("missing"), "{notice}");
+        assert!(picker.notice_until.is_none(), "a failure must not time out");
+        picker.expire_notice();
+        assert!(picker.notice.is_some());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_mode_tabs_answer_clicks_from_the_border_they_moved_to() {
+        use ratatui::backend::TestBackend;
+        let root = crate::testing::temp_dir().join(format!("thither-tabs-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let area = Rect::new(0, 0, 100, 12);
+        let mut picker = test_picker(root.clone(), Mode::Browse);
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| picker.render(area, frame)).unwrap();
+
+        // The tabs sit on the top border, one row above the box contents.
+        assert_eq!(picker.mouse_header.y, area.y);
+        picker.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: picker.mouse_modes_x,
+            row: picker.mouse_header.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(picker.mode, Mode::Dirs);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn clicking_a_step_of_the_header_path_jumps_to_that_ancestor() {
+        use ratatui::backend::TestBackend;
+        let root = crate::testing::temp_dir().join(format!("thither-crumb-{}", std::process::id()));
+        let deep = root.join("one").join("two").join("three");
+        std::fs::create_dir_all(&deep).unwrap();
+        let mut picker = test_picker(deep.clone(), Mode::Browse);
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal
+            .draw(|frame| picker.render(Rect::new(0, 0, 120, 20), frame))
+            .unwrap();
+
+        // Every visible step offers the directory it names, the last being
+        // where we already are.
+        let target = root.join("one");
+        let (area, _) = picker
+            .mouse_crumbs
+            .iter()
+            .find(|(_, dir)| dir == &target)
+            .expect("the ancestor is clickable")
+            .clone();
+        picker.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(picker.browser().cwd, target);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -2163,6 +2701,7 @@ mod tests {
                 RowMarks {
                     icons: true,
                     favorite: false,
+                    inside: false,
                 },
             );
             List::new(vec![item]).render(area, &mut buffer);
@@ -2202,6 +2741,7 @@ mod tests {
                 RowMarks {
                     icons: enabled,
                     favorite: false,
+                    inside: false,
                 },
             );
             List::new(vec![item]).render(area, &mut buffer);
@@ -2229,6 +2769,7 @@ mod tests {
                 RowMarks {
                     icons: true,
                     favorite: false,
+                    inside: false,
                 },
             );
             List::new(vec![item]).render(area, &mut buffer);
@@ -2289,13 +2830,12 @@ mod tests {
     }
 
     #[test]
-    fn inline_height_fills_the_space_below_the_cursor() {
-        assert_eq!(inline_height(50, 0), 50);
-        assert_eq!(inline_height(50, 10), 40);
-        assert_eq!(inline_height(50, 45), 20);
-        assert_eq!(inline_height(20, 19), INLINE_MIN_HEIGHT);
-        assert_eq!(inline_height(10, 9), 10);
-        assert_eq!(inline_height(0, 0), 1);
+    fn the_picker_takes_the_whole_window_whatever_the_history_above() {
+        // Shell history no longer costs the listing any rows: it scrolls up.
+        assert_eq!(inline_height(50), 50);
+        assert_eq!(inline_height(12), 12);
+        // A terminal that reports nothing still gets a row to draw in.
+        assert_eq!(inline_height(0), 1);
     }
 
     #[test]
@@ -2311,23 +2851,31 @@ mod tests {
     #[test]
     fn location_spans_bold_the_last_segment() {
         #[cfg(windows)]
-        let (path, parent) = (r"C:\Users\example\thither", r"C:\Users\example\");
+        let (path, parent) = (r"C:\Users\example\thither", r"C:\Users\example");
         #[cfg(not(windows))]
-        let (path, parent) = ("/home/example/thither", "/home/example/");
+        let (path, parent) = ("/home/example/thither", "/home/example");
+
+        // The pieces still read as the path, so nothing is lost by splitting it.
         let spans = location_spans(Path::new(path));
-        let parts: Vec<(String, bool)> = spans
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, path);
+
+        // Only the folder in view is emphasised; the trail stays quiet.
+        let bold: Vec<String> = spans
             .iter()
-            .map(|s| {
-                (
-                    s.content.to_string(),
-                    s.style.add_modifier.contains(Modifier::BOLD),
-                )
-            })
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.to_string())
             .collect();
-        assert_eq!(
-            parts,
-            vec![(parent.to_string(), false), ("thither".to_string(), true)]
-        );
+        assert_eq!(bold, vec!["thither".to_string()]);
+
+        // Every step points at the directory it names, so a click can go there.
+        let targets: Vec<PathBuf> = crumb_spans(Path::new(path))
+            .into_iter()
+            .filter_map(|(_, dir)| dir)
+            .collect();
+        assert_eq!(targets.last().unwrap(), Path::new(path));
+        assert_eq!(targets[targets.len() - 2], Path::new(parent));
+        assert!(targets.first().unwrap().parent().is_none());
     }
 
     #[test]
