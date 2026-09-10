@@ -83,17 +83,18 @@ impl Action {
         }
     }
 
-    /// The character that runs this action with Alt held, if it has one.
+    /// The character that runs this action, if it has one.
     ///
-    /// The menu is read, not typed at, so the letters come from the names and
-    /// stay put as the list grows. Opening the copies folder is housekeeping
-    /// rather than a repeated step, so it keeps no letter of its own.
+    /// The menu is read, not typed at, so every letter comes from a word in
+    /// its own name and stays put as the list grows. Four names start with
+    /// Open, so `o` goes to the temporary copy, which has no other way in,
+    /// and the plain one takes `d` for default.
     pub fn key(&self) -> Option<char> {
         match self {
             Self::Reveal => Some('f'),
-            Self::Open => Some('o'),
-            Self::TempCopy => Some('t'),
-            Self::TempFolder => None,
+            Self::Open => Some('d'),
+            Self::TempCopy => Some('o'),
+            Self::TempFolder => Some('t'),
             Self::Copy => Some('c'),
             Self::Editor => Some('v'),
             Self::Custom { definition, .. } => definition.key.as_deref().and_then(parse_key),
