@@ -51,6 +51,8 @@ tadoru actions check
 
 `init` は雛形を書き出し、`check` は書いた内容を検証する。既存の設定は上書きしない。
 雛形に入っているのは組み込みにない操作だけなので、同じものが二重に並ぶことはない。
+雛形は exe に埋め込んであるので、配布物に設定が入っていなくても書き出せる。
+設定がまだ無い間は、メニューにこのコマンドを案内する行が出る。
 同じ雛形を [examples/config/actions.json](../../examples/config/actions.json) にも置いている。
 ポータブル版では `examples/config` を exe の隣へ `config` という名前でコピーすると使える。
 

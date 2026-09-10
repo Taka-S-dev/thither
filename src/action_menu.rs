@@ -24,6 +24,9 @@ pub struct Menu {
     visible: Vec<usize>,
     selected: usize,
     error: Option<String>,
+    /// Shown when no actions.json exists. The command that writes one is the
+    /// only way to learn the format, and nothing else on this screen says it.
+    hint: Option<&'static str>,
     mouse_rows: Rect,
     mouse_first: usize,
     /// The menu opens on its keys and only takes text once asked, so a single
@@ -34,6 +37,8 @@ pub struct Menu {
 impl Menu {
     pub fn new(target: PathBuf) -> Self {
         let (items, error) = actions::load(&target);
+        let hint = (error.is_none() && actions::config_path().is_ok_and(|path| !path.exists()))
+            .then_some("No actions.json yet. Run tadoru actions init to add your own.");
         let visible = (0..items.len()).collect();
         Self {
             target,
@@ -42,6 +47,7 @@ impl Menu {
             visible,
             selected: 0,
             error,
+            hint,
             mouse_rows: Rect::default(),
             mouse_first: 0,
             filtering: false,
@@ -188,7 +194,11 @@ impl Menu {
         let [target, prompt, warning, rows] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(if self.error.is_some() { 3 } else { 0 }),
+            Constraint::Length(match (&self.error, &self.hint) {
+                (Some(_), _) => 3,
+                (None, Some(_)) => 2,
+                _ => 0,
+            }),
             Constraint::Min(0),
         ])
         .areas(inner);
@@ -218,6 +228,13 @@ impl Menu {
             frame.render_widget(
                 Paragraph::new(error.as_str())
                     .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: false }),
+                warning,
+            );
+        } else if let Some(hint) = self.hint {
+            frame.render_widget(
+                Paragraph::new(hint)
+                    .style(Style::default().fg(Color::DarkGray))
                     .wrap(Wrap { trim: false }),
                 warning,
             );
@@ -298,10 +315,44 @@ mod tests {
             visible,
             selected: 0,
             error: None,
+            hint: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
             filtering: false,
         }
+    }
+
+    #[test]
+    fn a_menu_with_no_config_says_how_to_start_one() {
+        let mut menu = menu_of(vec![Action::Reveal]);
+        menu.hint = Some("No actions.json yet. Run tadoru actions init to add your own.");
+        let mut terminal = Terminal::new(TestBackend::new(70, 10)).unwrap();
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("tadoru actions init"), "{screen}");
+        // The list still starts below it rather than being pushed off screen.
+        assert!(screen.contains("Open in file manager"), "{screen}");
+
+        menu.hint = None;
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!screen.contains("actions init"), "{screen}");
     }
 
     #[test]
@@ -425,6 +476,7 @@ mod tests {
             visible: vec![0, 1],
             selected: 0,
             error: None,
+            hint: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
             filtering: true,
@@ -447,6 +499,7 @@ mod tests {
             visible: vec![0, 1],
             selected: 0,
             error: None,
+            hint: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
             filtering: true,

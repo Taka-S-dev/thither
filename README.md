@@ -72,6 +72,9 @@ tadoru config init
 アイコン表示、マウスの有効・無効、一時コピーの上限、走査から外すフォルダを指定できる。
 置き場所と各項目の意味は[画面と操作](docs/guide/screen.md)にある。
 
+Ctrl-P のアクションを増やすときは `tadoru actions init` が編集用の雛形を書き出す。
+書式は[アクションメニュー](docs/guide/actions.md)を参照。
+
 ## 開発
 
 ```text
