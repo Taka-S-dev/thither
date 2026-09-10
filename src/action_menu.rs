@@ -27,7 +27,12 @@ pub struct Menu {
     /// Shown when no actions.json exists. The command that writes one is the
     /// only way to learn the format, and nothing else on this screen says it.
     hint: Option<&'static str>,
+    /// Commands that act on tadoru rather than on the selected item.
+    tools: Vec<Action>,
+    /// Set by a click in that zone, consumed by the Enter that follows it.
+    pending_tool: Option<usize>,
     mouse_rows: Rect,
+    mouse_tools: Rect,
     mouse_first: usize,
     /// The menu opens on its keys and only takes text once asked, so a single
     /// letter runs an action instead of needing a modifier held with it.
@@ -48,7 +53,10 @@ impl Menu {
             selected: 0,
             error,
             hint,
+            tools: actions::tools(),
+            pending_tool: None,
             mouse_rows: Rect::default(),
+            mouse_tools: Rect::default(),
             mouse_first: 0,
             filtering: false,
         }
@@ -69,19 +77,36 @@ impl Menu {
         (self.owner(ch) == Some(index)).then_some(ch)
     }
 
+    /// A tool keeps its letter only while nothing in the list has taken it, so
+    /// a setting still wins the letter it asked for.
+    fn tool_owner(&self, ch: char) -> Option<usize> {
+        let ch = ch.to_ascii_lowercase();
+        self.owner(ch)
+            .is_none()
+            .then(|| self.tools.iter().position(|tool| tool.key() == Some(ch)))
+            .flatten()
+    }
+
     fn run(&self, index: usize) -> Decision {
         Decision::Run(Box::new(self.items[index].clone()))
     }
 
+    fn run_tool(&self, index: usize) -> Decision {
+        Decision::Run(Box::new(self.tools[index].clone()))
+    }
+
     pub fn handle(&mut self, key: KeyEvent) -> Decision {
+        if let Some(index) = self.pending_tool.take()
+            && key.code == KeyCode::Enter
+        {
+            return self.run_tool(index);
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Holding Alt runs an action from either mode, so a key learned from
         // the list still works with the filter focused and a name half typed.
         if key.modifiers.contains(KeyModifiers::ALT) && !ctrl {
-            if let KeyCode::Char(ch) = key.code
-                && let Some(index) = self.owner(ch)
-            {
-                return self.run(index);
+            if let KeyCode::Char(ch) = key.code {
+                return self.press(ch).unwrap_or(Decision::Stay);
             }
             return Decision::Stay;
         }
@@ -111,8 +136,8 @@ impl Menu {
                 if self.filtering {
                     self.query.push(ch);
                     self.filter();
-                } else if let Some(index) = self.owner(ch) {
-                    return self.run(index);
+                } else if let Some(decision) = self.press(ch) {
+                    return decision;
                 } else if ch == '/' {
                     // The usual key for starting a search, and one no action
                     // can claim, so it is free to mean this here.
@@ -122,6 +147,15 @@ impl Menu {
             _ => {}
         }
         Decision::Stay
+    }
+
+    /// The action a letter runs, from the list first so that a setting keeps
+    /// the letter it asked for even when a tool already prints it.
+    fn press(&self, ch: char) -> Option<Decision> {
+        if let Some(index) = self.owner(ch) {
+            return Some(self.run(index));
+        }
+        self.tool_owner(ch).map(|index| self.run_tool(index))
     }
 
     /// Leaving the filter drops what was typed, so the list a key acts on is
@@ -155,6 +189,15 @@ impl Menu {
 
     /// Select a displayed action; true requests execution through the Enter path.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        // The zone sits outside the list, so a click there cannot move a
+        // selection. It is remembered instead and read by the Enter that the
+        // caller sends straight after a click it accepted.
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && self.mouse_tools.contains((mouse.column, mouse.row).into())
+        {
+            self.pending_tool = Some(0);
+            return true;
+        }
         if !self.mouse_rows.contains((mouse.column, mouse.row).into()) {
             return false;
         }
@@ -180,6 +223,7 @@ impl Menu {
 
     pub fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
         self.mouse_rows = Rect::default();
+        self.mouse_tools = Rect::default();
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -191,7 +235,15 @@ impl Menu {
             });
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let [target, prompt, warning, rows] = Layout::vertical([
+        // A rule above the zone, so it reads as separate from the list rather
+        // than as its last row, whether the list is short or fills the screen.
+        // Dropped outright when the terminal is too short to spare the space.
+        let tools_height = if self.tools.is_empty() || inner.height < 7 {
+            0
+        } else {
+            2
+        };
+        let [target, prompt, warning, rows, tools] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(match (&self.error, &self.hint) {
@@ -200,8 +252,38 @@ impl Menu {
                 _ => 0,
             }),
             Constraint::Min(0),
+            Constraint::Length(tools_height),
         ])
         .areas(inner);
+        if tools_height > 0 {
+            frame.render_widget(
+                Paragraph::new("─".repeat(tools.width as usize))
+                    .style(Style::default().fg(Color::Indexed(238))),
+                Rect { height: 1, ..tools },
+            );
+            let line = Rect {
+                y: tools.y + 1,
+                height: 1,
+                ..tools
+            };
+            let key = match self.tools[0]
+                .key()
+                .filter(|&ch| self.tool_owner(ch).is_some())
+            {
+                Some(ch) => format!("{ch}  "),
+                None => "   ".to_string(),
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(key),
+                    Span::raw(self.tools[0].name().to_string()),
+                ]))
+                .style(Style::default().fg(Color::DarkGray)),
+                line,
+            );
+            self.mouse_tools = line;
+        }
         frame.render_widget(
             Paragraph::new(self.target.display().to_string())
                 .style(Style::default().fg(Color::Cyan)),
@@ -316,10 +398,66 @@ mod tests {
             selected: 0,
             error: None,
             hint: None,
+            tools: actions::tools(),
+            pending_tool: None,
             mouse_rows: Rect::default(),
+            mouse_tools: Rect::default(),
             mouse_first: 0,
             filtering: false,
         }
+    }
+
+    #[test]
+    fn the_copies_folder_sits_apart_from_the_actions_on_the_selection() {
+        let mut menu = menu_of(vec![Action::Reveal, Action::Copy]);
+        let mut terminal = Terminal::new(TestBackend::new(46, 12)).unwrap();
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        fn row(terminal: &Terminal<TestBackend>, y: u16) -> String {
+            let buffer = terminal.backend().buffer();
+            (1..45)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        }
+        // A blank line keeps it from reading as the last row of the list.
+        assert_eq!(row(&terminal, 9), "─".repeat(44));
+        assert_eq!(row(&terminal, 10), "  t  Open temporary copies folder");
+
+        // The filter never hides it, because it is not one of the items.
+        menu.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for ch in "zzz".chars() {
+            menu.handle(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert!(menu.visible.is_empty());
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        assert_eq!(row(&terminal, 10), "  t  Open temporary copies folder");
+
+        // Its key runs it from either mode, and a click on it does too.
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            Decision::Run(action) if matches!(*action, Action::TempFolder)
+        ));
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: menu.mouse_tools.x,
+            row: menu.mouse_tools.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(menu.handle_mouse(click));
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Decision::Run(action) if matches!(*action, Action::TempFolder)
+        ));
+        // A click elsewhere afterwards must not run it a second time.
+        assert!(!matches!(
+            menu.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Decision::Run(action) if matches!(*action, Action::TempFolder)
+        ));
     }
 
     #[test]
@@ -477,7 +615,10 @@ mod tests {
             selected: 0,
             error: None,
             hint: None,
+            tools: actions::tools(),
+            pending_tool: None,
             mouse_rows: Rect::default(),
+            mouse_tools: Rect::default(),
             mouse_first: 0,
             filtering: true,
         };
@@ -500,7 +641,10 @@ mod tests {
             selected: 0,
             error: None,
             hint: None,
+            tools: actions::tools(),
+            pending_tool: None,
             mouse_rows: Rect::default(),
+            mouse_tools: Rect::default(),
             mouse_first: 0,
             filtering: true,
         };

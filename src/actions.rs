@@ -342,8 +342,13 @@ fn defaults(target: &Path) -> Vec<Action> {
         actions.push(Action::Open);
         actions.push(Action::TempCopy);
     }
-    actions.push(Action::TempFolder);
     actions
+}
+
+/// Commands that ignore the selection. Listing them beside the actions on the
+/// selected item invites reading them as one, so they are kept apart.
+pub fn tools() -> Vec<Action> {
+    vec![Action::TempFolder]
 }
 
 /// Invalid user config leaves the built-in menu available with an explanation.
@@ -703,11 +708,14 @@ mod tests {
         fs::write(&existing, "keep").unwrap();
         assert_eq!(temporary_copies_folder(&fixture.0).unwrap(), root);
         assert_eq!(fs::read_to_string(existing).unwrap(), "keep");
+        // Reaching the folder is a command on tadoru, not on the selection,
+        // so it is offered apart from the actions for the selected item.
         assert!(
-            defaults(&fixture.0)
+            !defaults(&fixture.0)
                 .iter()
-                .any(|action| matches!(action, Action::TempFolder))
+                .any(|a| matches!(a, Action::TempFolder))
         );
+        assert!(tools().iter().any(|a| matches!(a, Action::TempFolder)));
     }
 
     #[test]
