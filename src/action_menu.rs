@@ -235,24 +235,31 @@ impl Menu {
             });
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        let head = match (&self.error, &self.hint) {
+            (Some(_), _) => 3,
+            (None, Some(_)) => 2,
+            _ => 0,
+        };
         // A rule above the zone, so it reads as separate from the list rather
-        // than as its last row, whether the list is short or fills the screen.
-        // Dropped outright when the terminal is too short to spare the space.
-        let tools_height = if self.tools.is_empty() || inner.height < 7 {
+        // than as its last row. It follows the list instead of sitting at the
+        // foot of the window, which in a full-height menu put it far enough
+        // below the actions to be missed. Dropped when there is no room.
+        let available = inner.height.saturating_sub(2 + head);
+        let tools_height = if self.tools.is_empty() || available < 3 {
             0
         } else {
             2
         };
-        let [target, prompt, warning, rows, tools] = Layout::vertical([
+        let list_height = (self.visible.len() as u16)
+            .max(1)
+            .min(available.saturating_sub(tools_height));
+        let [target, prompt, warning, rows, tools, _rest] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(match (&self.error, &self.hint) {
-                (Some(_), _) => 3,
-                (None, Some(_)) => 2,
-                _ => 0,
-            }),
-            Constraint::Min(0),
+            Constraint::Length(head),
+            Constraint::Length(list_height),
             Constraint::Length(tools_height),
+            Constraint::Min(0),
         ])
         .areas(inner);
         if tools_height > 0 {
@@ -408,6 +415,29 @@ mod tests {
     }
 
     #[test]
+    fn a_tall_window_keeps_the_zone_next_to_the_list() {
+        let mut menu = menu_of(vec![Action::Reveal, Action::Editor, Action::Copy]);
+        let mut terminal = Terminal::new(TestBackend::new(46, 26)).unwrap();
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (1..45)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        // Three actions on rows 3 to 5, then the zone. Pinning it to the foot
+        // of the window instead left eighteen blank rows between the two.
+        assert_eq!(row(5), "  c  Copy path");
+        assert_eq!(row(6), "─".repeat(44));
+        assert_eq!(row(7), "  t  Open temporary copies folder");
+        assert_eq!(row(8), "");
+    }
+
+    #[test]
     fn the_copies_folder_sits_apart_from_the_actions_on_the_selection() {
         let mut menu = menu_of(vec![Action::Reveal, Action::Copy]);
         let mut terminal = Terminal::new(TestBackend::new(46, 12)).unwrap();
@@ -423,8 +453,8 @@ mod tests {
                 .to_string()
         }
         // A blank line keeps it from reading as the last row of the list.
-        assert_eq!(row(&terminal, 9), "─".repeat(44));
-        assert_eq!(row(&terminal, 10), "  t  Open temporary copies folder");
+        assert_eq!(row(&terminal, 5), "─".repeat(44));
+        assert_eq!(row(&terminal, 6), "  t  Open temporary copies folder");
 
         // The filter never hides it, because it is not one of the items.
         menu.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -435,7 +465,10 @@ mod tests {
         terminal
             .draw(|frame| menu.render(frame.area(), frame))
             .unwrap();
-        assert_eq!(row(&terminal, 10), "  t  Open temporary copies folder");
+        // With nothing matching, the list keeps one row for its message and
+        // the zone stays right under it.
+        assert_eq!(row(&terminal, 4), "─".repeat(44));
+        assert_eq!(row(&terminal, 5), "  t  Open temporary copies folder");
 
         // Its key runs it from either mode, and a click on it does too.
         assert!(matches!(
@@ -566,7 +599,7 @@ mod tests {
         assert_eq!(menu.shown_key(0), Some('f'));
 
         let mut menu = menu;
-        let mut terminal = Terminal::new(TestBackend::new(44, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(44, 10)).unwrap();
         terminal
             .draw(|frame| menu.render(frame.area(), frame))
             .unwrap();
@@ -664,7 +697,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         let valid = click(menu.mouse_rows.y);
-        let blank = click(menu.mouse_rows.y + 2);
+        let blank = click(menu.mouse_tools.y + 3);
         let header = click(menu.mouse_rows.y - 1);
         assert!(!menu.handle_mouse(blank));
         assert!(!menu.handle_mouse(header));
