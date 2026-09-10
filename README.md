@@ -10,9 +10,13 @@ cmd と PowerShell を行き来しながら、フォルダ検索・ファイル�
 - ファイル名だけ分かる: `cf Cargo.toml` で、そのファイルの親フォルダへ移動
 - 名前を知らず中を見たい: `c` を開き、Shift-Tab で browse に切り替える
 
-`c`・`cf`・browse は本体だけで動く。履歴を使う `z <keywords>`・`zi`・recent には
+`c`・`cf`・browse・favorites は本体だけで動く。履歴を使う `z <keywords>`・`zi`・recent には
 別途 `zoxide` が必要（`z` の引数なしはホームへ移動）。fd・fzf は不要。
-tadoru 経由で移動したフォルダは、zoxide が利用できる場合に記録する。
+zoxide が無い環境で recent を開くと、入れ方と代わりの手段を画面に表示する。
+
+履歴を自前で持たないのは、zoxide がシェルの cd フックで**すべての移動**を記録しているため。
+tadoru が自前で持つと tadoru 経由の移動しか残らず、しかも既存の履歴を捨てさせることになる。
+tadoru 経由で移動したフォルダは、zoxide が利用できる場合に `zoxide add` で記録する。
 
 ## 導入
 

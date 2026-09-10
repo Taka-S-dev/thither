@@ -187,7 +187,17 @@ pub fn recent() -> Result<Vec<PathBuf>, String> {
     let output = std::process::Command::new("zoxide")
         .args(["query", "--list"])
         .output()
-        .map_err(|err| format!("cannot run zoxide: {err}"))?;
+        .map_err(|err| match err.kind() {
+            // Saying only that a program is missing leaves the reader to work
+            // out which parts of tadoru still work and what to do about it.
+            std::io::ErrorKind::NotFound => {
+                "recent mode lists the directories zoxide remembers, and zoxide is not installed. \
+                 Install it (winget install ajeetdsouza.zoxide), or use favorites for the places \
+                 you care about: Ctrl-B pins the selected folder. dirs, files and browse need nothing."
+                    .to_string()
+            }
+            _ => format!("cannot run zoxide: {err}"),
+        })?;
     if !output.status.success() {
         return Err(format!(
             "zoxide query failed: {}",

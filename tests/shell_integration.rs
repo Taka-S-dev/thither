@@ -343,7 +343,12 @@ fn recent_select_one_distinguishes_errors_empty_history_and_selection() {
     std::fs::remove_file(zoxide).unwrap();
     let output = command.env("PATH", &fixture.root).output().unwrap();
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot run zoxide"));
+    // Naming the missing program is not enough on its own: the reader also has
+    // to learn how to get the mode working and what still works without it.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("zoxide is not installed"), "{stderr}");
+    assert!(stderr.contains("winget install"), "{stderr}");
+    assert!(stderr.contains("favorites"), "{stderr}");
 }
 
 #[test]
