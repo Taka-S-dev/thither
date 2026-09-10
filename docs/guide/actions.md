@@ -50,6 +50,7 @@ tadoru actions check
 ```
 
 `init` は雛形を書き出し、`check` は書いた内容を検証する。既存の設定は上書きしない。
+雛形に入っているのは組み込みにない操作だけなので、同じものが二重に並ぶことはない。
 同じ雛形を [examples/config/actions.json](../../examples/config/actions.json) にも置いている。
 ポータブル版では `examples/config` を exe の隣へ `config` という名前でコピーすると使える。
 
@@ -67,11 +68,12 @@ tadoru actions check
   "include_defaults": true,
   "actions": [
     {
-      "name": "VS Codeで開く",
-      "program": "code",
-      "args": ["{path}"],
+      "name": "Git status",
+      "program": "git",
+      "args": ["-C", "{dir}", "status", "--short"],
       "target": "any",
-      "run": "detach"
+      "run": "terminal",
+      "key": "s"
     },
     {
       "name": "自作スクリプト",
