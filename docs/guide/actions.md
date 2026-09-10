@@ -13,7 +13,6 @@ Space は検索文字の入力に使う。メニューを開いた時点の対�
 `TEMP_元のファイル名` にコピーして既定のアプリで開く。コピー先は画面下部に表示する。
 保存先は OS の一時フォルダ内の `tadoru-copies`。**Open temporary copies folder** で開き、
 不要なコピーを確認して手動削除できる。このメニューはフォルダ選択中にも表示する。
-以前の版が作った `tadoru-copy-*` は一時フォルダ直下に残る。開いているアプリへの影響を避けるため、自動移動しない。
 一時コピーの上限は既定で **100 MiB**。`config.toml` の `temp_copy_max_mib = 100` で変更でき、
 `0` で一時コピーを無効にする。実行時に設定を読み直す。
 開始前にサイズを確認し、コピー中にファイルが大きくなっても上限を超えて書き込まない。
@@ -24,28 +23,24 @@ Space は検索文字の入力に使う。メニューを開いた時点の対�
 原本を他のアプリが更新している最中のコピーは、そのアプリで保存・更新を止めてから実行する。
 Linux のパスのクリップボードコピーには Wayland で `wl-copy`、それ以外では `xclip` が必要。
 
-独自のメニューを作るには次を実行する。既存の設定は上書きしない。
-
-編集用のひな形は [examples/config/actions.json](../../examples/config/actions.json) に同梱している。
-ポータブル版では `examples/config` を exe の隣へ `config` という名前でコピーすると使える。
-開発時は `target/release/config` がコピー先になる。既存設定がある場合は上書きせず、必要な項目だけ追加する。
-このひな形はバージョン管理する。実際に使う設定や個人のお気に入りはコミットしない。
+独自のメニューを作るには次を実行する。
 
 ```text
 tadoru actions init
 tadoru actions check
 ```
 
+`init` は雛形を書き出し、`check` は書いた内容を検証する。既存の設定は上書きしない。
+同じ雛形を [examples/config/actions.json](../../examples/config/actions.json) にも置いている。
+ポータブル版では `examples/config` を exe の隣へ `config` という名前でコピーすると使える。
+
 設定ファイルは `config.toml` と同じフォルダの **`actions.json`**。
-ポータブル運用では exe と同じ場所に `config` フォルダを作成する。
-その中の `config.toml`・`favorites.toml`・`actions.json` を使用するので、フォルダごと持ち運べる。
-`config` フォルダがない場合は従来のユーザー設定フォルダを使う。既存設定の自動コピーは行わない。
-保存先を分けたい場合は、環境変数 `TADORU_CONFIG_DIR` に設定フォルダを指定できる
-（最優先。`config.toml`・`favorites.toml`・`actions.json` に共通）。
-自作スクリプトは `config/scripts` に置き、`program` を `scripts/my-tool.bat` のような相対パスにすると持ち運びやすい。
-お気に入りの登録先やコマンド内に書いた絶対パスは、別の PC へ移す際に見直す必要がある。
+置き場所の決まり方は[画面と操作](screen.md)にある。exe の隣に `config` フォルダを作れば、
+`config.toml`・`favorites.toml`・`actions.json` をまとめて持ち運べる。
+自作スクリプトは `config/scripts` に置き、`program` を `scripts/my-tool.bat` のような
+相対パスにすると、PC を移しても書き換えずに済む。
 メニューを開くたびに読み直す。JSON の誤りは画面に表示し、既定の操作と移動機能は使い続けられる。
-選択したプロジェクト内の設定を自動実行・自動読込することはない。
+移動先のフォルダに置かれた設定を読み込んだり実行したりすることはない。
 
 ```json
 {
