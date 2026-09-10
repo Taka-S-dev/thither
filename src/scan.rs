@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -27,12 +27,14 @@ pub fn spawn(
     injector: Injector<Entry>,
     done: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
-) -> JoinHandle<Result<(), String>> {
+) -> JoinHandle<Result<Vec<u32>, String>> {
     if matches!(mode, Mode::Recent | Mode::Favorites) {
         return std::thread::spawn(move || {
+            // zoxide's score order is the point of recent mode, and favorites
+            // keep the order they were saved in, so neither is re-sorted.
             let result = push_saved(&injector, mode);
             done.store(true, Ordering::Release);
-            result
+            result.map(|()| Vec::new())
         });
     }
     let exclude: Arc<HashSet<OsString>> = Arc::new(exclude.iter().map(OsString::from).collect());
@@ -41,6 +43,10 @@ pub fn spawn(
             done.store(true, Ordering::Release);
             return Err(error);
         }
+        // Sort keys are built here, beside the walk that already owns every
+        // name. Building them from the finished list instead put around
+        // 90 ms on the thread that draws, every time a scan completed.
+        let keys: Arc<Mutex<Vec<(usize, String, u32)>>> = Arc::new(Mutex::new(Vec::new()));
         let mut builder = WalkBuilder::new(&root);
         builder
             .standard_filters(false)
@@ -56,6 +62,13 @@ pub fn spawn(
             let root = root.clone();
             let injector = injector.clone();
             let cancel = cancel.clone();
+            // Each worker fills its own vector and hands it over when the walk
+            // drops its closure, so the shared lock is taken once per thread
+            // rather than once per file.
+            let mut mine = Worker {
+                keys: Vec::new(),
+                shared: keys.clone(),
+            };
             Box::new(move |entry| {
                 if cancel.load(Ordering::Relaxed) {
                     return WalkState::Quit;
@@ -63,14 +76,35 @@ pub fn spawn(
                 if let Ok(entry) = entry
                     && let Some(item) = to_entry(&root, &entry, mode)
                 {
-                    injector.push(item, |item, cols| cols[0] = item.display.as_str().into());
+                    let depth = item.display.matches(MAIN_SEPARATOR).count();
+                    let sort_key = item.display.to_lowercase();
+                    let index =
+                        injector.push(item, |item, cols| cols[0] = item.display.as_str().into());
+                    mine.keys.push((depth, sort_key, index));
                 }
                 WalkState::Continue
             })
         });
+        let mut keys = std::mem::take(&mut *keys.lock().expect("scan keys"));
+        keys.sort_unstable();
         done.store(true, Ordering::Release);
-        Ok(())
+        Ok(keys.into_iter().map(|(_, _, index)| index).collect())
     })
+}
+
+/// Hands a worker's sort keys to the shared vector when the walk is done with
+/// it. `build_parallel` has no per-thread finish hook, so this rides on Drop.
+struct Worker {
+    keys: Vec<(usize, String, u32)>,
+    shared: Arc<Mutex<Vec<(usize, String, u32)>>>,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.append(&mut self.keys);
+        }
+    }
 }
 
 #[cfg(windows)]

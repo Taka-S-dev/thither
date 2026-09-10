@@ -62,8 +62,11 @@ struct Source {
     matcher: Nucleo<Entry>,
     scan_done: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
-    scanner: Option<JoinHandle<Result<(), String>>>,
+    scanner: Option<JoinHandle<Result<Vec<u32>, String>>>,
     scan_error: Option<String>,
+    /// The order the scan handed back, held until every item has reached the
+    /// snapshot it indexes into.
+    scanned_order: Option<Vec<u32>>,
     selected: u32,
     query_empty: bool,
     /// Item indices in browse order (shallow paths first, then by name), built
@@ -95,6 +98,7 @@ impl Source {
             selected: 0,
             query_empty: true,
             browse_order: None,
+            scanned_order: None,
         }
     }
 
@@ -104,10 +108,13 @@ impl Source {
         self.query_empty && !matches!(self.mode, Mode::Recent | Mode::Favorites)
     }
 
-    /// Builds the browse order once every scanned item is in the snapshot.
+    /// Takes the order the scan built, once every item it names has reached
+    /// the snapshot. The order itself is produced by the walk, so nothing is
+    /// sorted here.
     fn refresh_browse_order(&mut self) {
         if matches!(self.mode, Mode::Recent | Mode::Favorites)
             || self.browse_order.is_some()
+            || self.scanned_order.is_none()
             || !self.scan_done.load(Ordering::Acquire)
         {
             return;
@@ -116,16 +123,7 @@ impl Source {
         if snapshot.item_count() != self.matcher.injector().injected_items() {
             return;
         }
-        let mut order: Vec<u32> = (0..snapshot.item_count()).collect();
-        order.sort_by_cached_key(|&i| {
-            let display = snapshot
-                .get_item(i)
-                .map(|item| item.data.display.as_str())
-                .unwrap_or_default();
-            let depth = display.matches(std::path::MAIN_SEPARATOR).count();
-            (depth, display.to_lowercase())
-        });
-        self.browse_order = Some(order);
+        self.browse_order = self.scanned_order.take();
     }
 
     /// The nth row as shown: browse order when browsing, nucleo's ranking otherwise.
@@ -179,12 +177,27 @@ impl Source {
 
     fn finish_scan(&mut self) {
         if let Some(handle) = self.scanner.take() {
-            self.scan_error = handle
+            match handle
                 .join()
                 .unwrap_or_else(|_| Err("scan thread panicked".into()))
-                .err();
+            {
+                Ok(order) => self.scanned_order = Some(order),
+                Err(error) => self.scan_error = Some(error),
+            }
             self.scan_done.store(true, Ordering::Release);
         }
+    }
+}
+
+impl Source {
+    /// Throw the source away without making the caller wait for it. Dropping
+    /// one waits for its scanner to notice the cancel flag and then frees a
+    /// matcher holding every scanned path, which together cost tens of
+    /// milliseconds on a large tree. Leaving a mode switch to pay that is
+    /// what made switching stutter.
+    fn retire(self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        std::thread::spawn(move || drop(self));
     }
 }
 
@@ -364,7 +377,10 @@ impl Picker {
             return;
         }
         self.root = root;
-        self.sources = std::array::from_fn(|_| None);
+        let discarded = std::mem::replace(&mut self.sources, std::array::from_fn(|_| None));
+        for source in discarded.into_iter().flatten() {
+            source.retire();
+        }
         self.preview = None;
     }
 
@@ -386,7 +402,9 @@ impl Picker {
         self.mode = entering;
         if entering == Mode::Favorites {
             self.reload_pinned();
-            self.sources[mode_index(Mode::Favorites)] = None;
+            if let Some(stale) = self.sources[mode_index(Mode::Favorites)].take() {
+                stale.retire();
+            }
         }
         if entering == Mode::Browse && self.browser.is_none() {
             let start = self.sources[mode_index(leaving)]
@@ -2597,7 +2615,7 @@ mod tests {
                 source.finish_scan();
                 source.mode = Mode::Recent;
                 source.scanner = Some(std::thread::spawn(move || {
-                    error.map_or(Ok(()), |error| Err(error.to_string()))
+                    error.map_or(Ok(Vec::new()), |error| Err(error.to_string()))
                 }));
                 source.finish_scan();
                 picker.sources[mode_index(Mode::Recent)] = Some(source);
@@ -2627,6 +2645,55 @@ mod tests {
                 assert_eq!(picker.mode, Mode::Favorites);
             }
         }
+    }
+
+    /// Mode switching used to stall: leaving browse threw away every cached
+    /// source on the drawing thread, and finishing a scan sorted its result
+    /// there too. Both are measured here so a regression is visible.
+    #[test]
+    #[ignore = "local performance measurement; set TADORU_BENCH_ROOT and run in release mode"]
+    fn benchmark_mode_switch() {
+        use std::time::Instant;
+        let root = std::env::var_os("TADORU_BENCH_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap());
+        let config = Config::default();
+
+        let mut source = Source::start(Mode::Files, &root, &config);
+        source.finish_scan();
+        while source.matcher.tick(TICK_MS).running {}
+        let count = source.matcher.snapshot().item_count();
+        let start = Instant::now();
+        source.refresh_browse_order();
+        assert!(source.browse_order.is_some());
+        eprintln!(
+            "take_browse_order items={count} ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+
+        for wait_ms in [0, 60] {
+            let source = Source::start(Mode::Files, &root, &config);
+            std::thread::sleep(Duration::from_millis(wait_ms));
+            let start = Instant::now();
+            source.retire();
+            eprintln!(
+                "retire_mid_scan_after_{wait_ms}ms ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        let mut picker = test_picker(root.clone(), Mode::Dirs);
+        picker.source().finish_scan();
+        picker.mode = Mode::Files;
+        picker.source().finish_scan();
+        picker.mode = Mode::Browse;
+        picker.browser().enter();
+        let start = Instant::now();
+        picker.switch_mode(1);
+        eprintln!(
+            "switch_out_of_browse ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     #[test]

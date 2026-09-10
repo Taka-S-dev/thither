@@ -87,14 +87,16 @@ cargo test
 PowerShell 7（`pwsh`）と bash が要る。Windows では Git Bash を使う
 （標準以外の場所にある場合は `TADORU_TEST_BASH` に実行ファイルのパスを設定）。
 
-性能測定は対象フォルダを指定して再実行できる。
+性能測定は `TADORU_BENCH_ROOT` に対象フォルダを指定して再実行できる。
 
 ```text
 cargo test --release --bin tadoru benchmark_local_tree -- --ignored --nocapture
+cargo test --release --bin tadoru benchmark_mode_switch -- --ignored --nocapture
 ```
 
-手元の Windows x86_64 / release ビルドでは、既定の除外設定で約13.7万ファイルの走査が
-0.1 秒前後、`src` への検索更新が 10 ms 以下だった。実行ごとに数十パーセント動くので、
-狭い範囲を主張できる数字ではない。
-これは内部処理の測定で、プロセス起動から実端末への初回表示や入力遅延を保証する値ではない。
+手元の Windows x86_64 / release ビルドで約30万ファイルのフォルダを指定すると、走査から
+並び順の確定まで 0.3 秒前後、`src` への検索更新が 15 ms 以下だった。実行ごとに動くので、
+狭い範囲を主張できる数字ではない。走査はバックグラウンドで進み、一覧は途中から使える。
+モード切替の測定は、描画スレッドを止める処理が戻っていないかを見るためのもの。
+いずれも内部処理の測定で、プロセス起動から実端末への初回表示や入力遅延を保証する値ではない。
 画面は変化があったときだけ描き直すので、開いたまま放置しても CPU を使い続けない。
