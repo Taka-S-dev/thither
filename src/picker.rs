@@ -918,7 +918,7 @@ impl Picker {
                 self.set_query("");
                 Action::Continue
             }
-            (KeyCode::Char(c), false) => {
+            (KeyCode::Char(c), false) if crate::keys::is_typed_text(&key) => {
                 let mut q = self.query.clone();
                 q.push(c);
                 self.set_query(&q);
@@ -949,7 +949,7 @@ impl Picker {
                 }
             }
             (KeyCode::Char('u'), true) => b.set_filter(""),
-            (KeyCode::Char(c), false) => {
+            (KeyCode::Char(c), false) if crate::keys::is_typed_text(&key) => {
                 let mut f = b.filter.clone();
                 f.push(c);
                 b.set_filter(&f);
@@ -2180,6 +2180,24 @@ mod tests {
                 as u16;
             assert_eq!(buffer[(at, bottom)].fg, expected.fg.unwrap(), "{mode:?}");
             assert_ne!(buffer[(at, bottom)].fg, theme::BORDER.fg.unwrap());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn alt_chars_do_not_reach_the_search_or_browse_filter() {
+        let root = crate::testing::temp_dir().join(format!("tadoru-alt-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        for mode in [Mode::Dirs, Mode::Browse] {
+            let mut picker = test_picker(root.clone(), mode);
+            picker.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+            let filter = |p: &mut Picker| match mode {
+                Mode::Browse => p.browser().filter.clone(),
+                _ => p.query.clone(),
+            };
+            assert!(filter(&mut picker).is_empty(), "{mode:?}");
+            picker.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+            assert_eq!(filter(&mut picker), "d", "{mode:?}");
         }
         std::fs::remove_dir_all(&root).unwrap();
     }

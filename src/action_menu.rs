@@ -67,7 +67,7 @@ impl Menu {
                 self.query.clear();
                 self.filter();
             }
-            (KeyCode::Char(ch), false) => {
+            (KeyCode::Char(ch), false) if crate::keys::is_typed_text(&key) => {
                 self.query.push(ch);
                 self.filter();
             }
@@ -202,6 +202,26 @@ impl Menu {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn alt_and_ctrl_chars_stay_out_of_the_filter() {
+        let mut menu = Menu {
+            target: PathBuf::from("selected file.txt"),
+            items: vec![Action::Reveal, Action::Copy],
+            query: String::new(),
+            visible: vec![0, 1],
+            selected: 0,
+            error: None,
+            mouse_rows: Rect::default(),
+            mouse_first: 0,
+        };
+        menu.handle(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
+        menu.handle(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(menu.query.is_empty());
+        assert_eq!(menu.visible, [0, 1]);
+        menu.handle(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(menu.query, "d");
+    }
 
     #[test]
     fn filtering_keeps_target_fixed_and_escape_only_closes_the_menu() {
