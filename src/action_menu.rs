@@ -26,6 +26,9 @@ pub struct Menu {
     error: Option<String>,
     mouse_rows: Rect,
     mouse_first: usize,
+    /// The menu opens on its keys and only takes text once asked, so a single
+    /// letter runs an action instead of needing a modifier held with it.
+    filtering: bool,
 }
 
 impl Menu {
@@ -41,6 +44,7 @@ impl Menu {
             error,
             mouse_rows: Rect::default(),
             mouse_first: 0,
+            filtering: false,
         }
     }
 
@@ -59,15 +63,19 @@ impl Menu {
         (self.owner(ch) == Some(index)).then_some(ch)
     }
 
+    fn run(&self, index: usize) -> Decision {
+        Decision::Run(Box::new(self.items[index].clone()))
+    }
+
     pub fn handle(&mut self, key: KeyEvent) -> Decision {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // Alt runs an action wherever it sits, including one the filter hides,
-        // so the key stays the same whether or not anything has been typed.
+        // Holding Alt runs an action from either mode, so a key learned from
+        // the list still works with the filter focused and a name half typed.
         if key.modifiers.contains(KeyModifiers::ALT) && !ctrl {
             if let KeyCode::Char(ch) = key.code
                 && let Some(index) = self.owner(ch)
             {
-                return Decision::Run(Box::new(self.items[index].clone()));
+                return self.run(index);
             }
             return Decision::Stay;
         }
@@ -92,13 +100,32 @@ impl Menu {
                 self.query.clear();
                 self.filter();
             }
+            (KeyCode::Tab, _) | (KeyCode::BackTab, _) => self.set_filtering(!self.filtering),
             (KeyCode::Char(ch), false) if crate::keys::is_typed_text(&key) => {
-                self.query.push(ch);
-                self.filter();
+                if self.filtering {
+                    self.query.push(ch);
+                    self.filter();
+                } else if let Some(index) = self.owner(ch) {
+                    return self.run(index);
+                } else if ch == '/' {
+                    // The usual key for starting a search, and one no action
+                    // can claim, so it is free to mean this here.
+                    self.set_filtering(true);
+                }
             }
             _ => {}
         }
         Decision::Stay
+    }
+
+    /// Leaving the filter drops what was typed, so the list a key acts on is
+    /// the whole list again rather than yesterday's narrowing.
+    fn set_filtering(&mut self, on: bool) {
+        self.filtering = on;
+        if !on && !self.query.is_empty() {
+            self.query.clear();
+            self.filter();
+        }
     }
 
     fn filter(&mut self) {
@@ -151,7 +178,11 @@ impl Menu {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(" Actions ")
-            .title_bottom(" Click / Enter: run  Alt+key: run directly  Esc / Ctrl-P: back ");
+            .title_bottom(if self.filtering {
+                " Click / Enter: run  Tab: back to keys  Esc / Ctrl-P: close "
+            } else {
+                " Click / Enter: run  Tab: filter  Esc / Ctrl-P: close "
+            });
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let [target, prompt, warning, rows] = Layout::vertical([
@@ -166,12 +197,22 @@ impl Menu {
                 .style(Style::default().fg(Color::Cyan)),
             target,
         );
-        frame.render_widget(Paragraph::new(format!("> {}", self.query)), prompt);
-        if prompt.width > 0 && prompt.height > 0 {
-            frame.set_cursor_position((
-                prompt.x + (2 + self.query.width() as u16).min(prompt.width - 1),
-                prompt.y,
-            ));
+        if self.filtering {
+            frame.render_widget(Paragraph::new(format!("> {}", self.query)), prompt);
+            if prompt.width > 0 && prompt.height > 0 {
+                frame.set_cursor_position((
+                    prompt.x + (2 + self.query.width() as u16).min(prompt.width - 1),
+                    prompt.y,
+                ));
+            }
+        } else {
+            // Say which keys the list is listening for. Without this the rows
+            // look like plain labels and the letters beside them like noise.
+            frame.render_widget(
+                Paragraph::new("Press a key to run.  Tab: filter")
+                    .style(Style::default().fg(Color::DarkGray)),
+                prompt,
+            );
         }
         if let Some(error) = &self.error {
             frame.render_widget(
@@ -203,6 +244,11 @@ impl Menu {
         let keyed = shown
             .iter()
             .any(|&(_, index)| self.shown_key(index).is_some());
+        let (label, width): (fn(char) -> String, usize) = if self.filtering {
+            (|ch| format!("alt+{ch}  "), 7)
+        } else {
+            (|ch| format!("{ch}  "), 3)
+        };
         let items: Vec<ListItem> = shown
             .iter()
             .map(|&(row, index)| {
@@ -213,8 +259,8 @@ impl Menu {
                     ""
                 };
                 let key = match (keyed, self.shown_key(index)) {
-                    (true, Some(ch)) => format!("alt+{ch}  "),
-                    (true, None) => " ".repeat(7),
+                    (true, Some(ch)) => label(ch),
+                    (true, None) => " ".repeat(width),
                     (false, _) => String::new(),
                 };
                 let line = Line::from(vec![
@@ -254,12 +300,49 @@ mod tests {
             error: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
+            filtering: false,
+        }
+    }
+
+    #[test]
+    fn the_menu_starts_on_its_keys_and_only_types_once_asked() {
+        let mut menu = menu_of(vec![Action::Reveal, Action::Copy]);
+        assert!(!menu.filtering);
+        // A bare letter runs its action, which is the whole point of opening
+        // on the keys rather than on a text box.
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+            Decision::Run(action) if matches!(*action, Action::Copy)
+        ));
+        assert!(menu.query.is_empty());
+        // A letter no action claims must not type, or the mode would be a lie.
+        assert!(matches!(
+            menu.handle(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)),
+            Decision::Stay
+        ));
+        assert!(menu.query.is_empty());
+
+        for enter in [KeyCode::Tab, KeyCode::Char('/')] {
+            menu.handle(KeyEvent::new(enter, KeyModifiers::NONE));
+            assert!(menu.filtering, "{enter:?}");
+            for ch in "copy".chars() {
+                menu.handle(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            }
+            assert_eq!(menu.query, "copy", "{enter:?}");
+            assert_eq!(menu.visible, [1], "{enter:?}");
+            // Leaving drops the text, so the next key acts on the whole list.
+            menu.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert!(!menu.filtering, "{enter:?}");
+            assert!(menu.query.is_empty(), "{enter:?}");
+            assert_eq!(menu.visible, [0, 1], "{enter:?}");
         }
     }
 
     #[test]
     fn an_alt_key_runs_its_action_even_while_the_filter_hides_it() {
         let mut menu = menu_of(vec![Action::Reveal, Action::Copy]);
+        menu.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(menu.filtering);
         for ch in "reveal".chars() {
             menu.handle(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -282,7 +365,7 @@ mod tests {
     #[test]
     fn a_configured_key_takes_the_letter_from_the_built_in_action() {
         let custom = Action::Custom {
-            definition: crate::actions::test_definition("Compare", Some("alt+c")),
+            definition: crate::actions::test_definition("Compare", Some("c")),
             config_dir: PathBuf::from("config"),
         };
         let menu = menu_of(vec![Action::Reveal, Action::Copy, custom]);
@@ -298,8 +381,28 @@ mod tests {
         terminal
             .draw(|frame| menu.render(frame.area(), frame))
             .unwrap();
-        let buffer = terminal.backend().buffer();
         // Columns 0 and 43 are the border.
+        let rows: Vec<String> = (3..6)
+            .map(|y| {
+                let buffer = terminal.backend().buffer();
+                (1..43)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        // The names line up because the row without a key is padded to match.
+        assert_eq!(rows[0], "▌ f  Open in file manager");
+        assert_eq!(rows[1], "     Copy path");
+        assert_eq!(rows[2], "  c  Compare");
+
+        // With the filter focused the same keys need Alt, and say so.
+        menu.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        terminal
+            .draw(|frame| menu.render(frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
         let row = |y: u16| -> String {
             (1..43)
                 .map(|x| buffer[(x, y)].symbol())
@@ -307,15 +410,14 @@ mod tests {
                 .trim_end()
                 .to_string()
         };
-        let rows: Vec<String> = (3..6).map(row).collect();
-        // The names line up because the row without a key is padded to match.
-        assert_eq!(rows[0], "▌ alt+f  Open in file manager");
-        assert_eq!(rows[1], "         Copy path");
-        assert_eq!(rows[2], "  alt+c  Compare");
+        assert_eq!(row(3), "▌ alt+f  Open in file manager");
+        assert_eq!(row(2), ">");
     }
 
     #[test]
     fn alt_and_ctrl_chars_stay_out_of_the_filter() {
+        // Started with the filter focused: this is about the modifiers, not
+        // about which mode the menu opens in.
         let mut menu = Menu {
             target: PathBuf::from("selected file.txt"),
             items: vec![Action::Reveal, Action::Copy],
@@ -325,6 +427,7 @@ mod tests {
             error: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
+            filtering: true,
         };
         menu.handle(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
         menu.handle(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
@@ -346,6 +449,7 @@ mod tests {
             error: None,
             mouse_rows: Rect::default(),
             mouse_first: 0,
+            filtering: true,
         };
         for ch in "copy".chars() {
             menu.handle(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));

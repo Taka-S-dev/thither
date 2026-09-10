@@ -8,7 +8,7 @@
       "args": ["--new-window", "{path}"],
       "target": "any",
       "run": "detach",
-      "key": "alt+n"
+      "key": "n"
     },
     {
       "name": "Git status",
@@ -16,7 +16,7 @@
       "args": ["-C", "{dir}", "status", "--short"],
       "target": "any",
       "run": "terminal",
-      "key": "alt+g"
+      "key": "g"
     }
   ]
 }

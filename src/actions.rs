@@ -383,13 +383,11 @@ fn read(file: &Path, target: &Path) -> Result<Vec<Action>> {
     Ok(actions)
 }
 
-/// `alt+g` becomes `g`. Anything else is rejected so a typo is not silently
-/// dropped, and so a setting cannot claim Ctrl, which the menu already uses.
+/// One letter or digit, which the menu listens for on its own. Anything
+/// longer is rejected so a typo is not silently dropped, and `/` is refused
+/// because it opens the filter.
 fn parse_key(value: &str) -> Option<char> {
-    let rest = value
-        .strip_prefix("alt+")
-        .or_else(|| value.strip_prefix("Alt+"))?;
-    let mut chars = rest.chars();
+    let mut chars = value.chars();
     let ch = chars.next()?.to_ascii_lowercase();
     (chars.next().is_none() && ch.is_ascii_alphanumeric()).then_some(ch)
 }
@@ -412,12 +410,12 @@ fn parse(text: &str) -> Result<File> {
         if let Some(key) = &action.key {
             let Some(ch) = parse_key(key) else {
                 return Err(format!(
-                    "{}: key must be alt+ and one letter or digit, such as alt+g",
+                    "{}: key must be one letter or digit, such as g",
                     action.name
                 ));
             };
             if claimed.contains(&ch) {
-                return Err(format!("{}: alt+{ch} is already used", action.name));
+                return Err(format!("{}: the key {ch} is already used", action.name));
             }
             claimed.push(ch);
         }
@@ -799,22 +797,25 @@ mod tests {
     }
 
     #[test]
-    fn a_key_must_name_alt_and_one_character_and_may_not_repeat() {
+    fn a_key_must_be_one_character_and_may_not_repeat() {
         let one = |key: &str| {
             format!(r#"{{"version":1,"actions":[{{"name":"a","program":"p","key":"{key}"}}]}}"#)
         };
-        assert_eq!(parse_key("alt+g"), Some('g'));
-        assert_eq!(parse_key("Alt+G"), Some('g'));
-        assert_eq!(parse_key("alt+7"), Some('7'));
+        assert_eq!(parse_key("g"), Some('g'));
+        assert_eq!(parse_key("G"), Some('g'));
+        assert_eq!(parse_key("7"), Some('7'));
         // Silently ignoring these would leave a key that never fires.
-        for bad in ["g", "ctrl+g", "alt+", "alt+gg", "alt++"] {
-            assert_eq!(parse_key(bad), None, "{bad}");
-            assert!(parse(&one(bad)).err().unwrap().contains("alt+"), "{bad}");
+        for bad in ["", "gg", "alt+g", "/", " "] {
+            assert_eq!(parse_key(bad), None, "{bad:?}");
+            assert!(
+                parse(&one(bad)).err().unwrap().contains("one letter"),
+                "{bad:?}"
+            );
         }
-        assert!(parse(&one("alt+g")).is_ok());
+        assert!(parse(&one("g")).is_ok());
         let twice = r#"{"version":1,"actions":[
-            {"name":"a","program":"p","key":"alt+g"},
-            {"name":"b","program":"p","key":"Alt+G"}]}"#;
+            {"name":"a","program":"p","key":"g"},
+            {"name":"b","program":"p","key":"G"}]}"#;
         assert!(parse(twice).err().unwrap().contains("already used"));
     }
 
