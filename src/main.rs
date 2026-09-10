@@ -7,6 +7,7 @@ mod icons;
 mod open;
 mod picker;
 mod scan;
+mod setup;
 mod shim;
 #[cfg(test)]
 mod testing;
@@ -38,6 +39,15 @@ enum Command {
     },
     /// Pick a path interactively and print it to stdout.
     Pick(PickArgs),
+    /// Put the shell integration in place, after showing what it will write.
+    Setup {
+        /// Which shell to set up. Detected from the environment when omitted.
+        #[arg(value_enum)]
+        shell: Option<Shell>,
+        /// Write without asking, for an unattended install.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Print shell integration code for the given shell.
     Init {
         #[arg(value_enum)]
@@ -107,11 +117,21 @@ impl Mode {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Shell {
     Powershell,
     Cmd,
     Bash,
+}
+
+impl Shell {
+    fn label(self) -> &'static str {
+        match self {
+            Shell::Powershell => "powershell",
+            Shell::Cmd => "cmd",
+            Shell::Bash => "bash",
+        }
+    }
 }
 
 enum Outcome {
@@ -143,6 +163,7 @@ fn main() -> ExitCode {
             Some(path) => Outcome::Path(path),
             None => Outcome::Cancelled,
         }),
+        Command::Setup { shell, yes } => setup(shell, yes).map(|()| Outcome::Done),
         Command::Init { shell, out } => init(shell, out).map(|()| Outcome::Done),
     };
     match result {
@@ -195,6 +216,21 @@ fn pick(mut args: PickArgs) -> Result<Option<PathBuf>, Box<dyn std::error::Error
     }
     let config = config::Config::load()?;
     picker::run(args, root, config)
+}
+
+fn setup(shell: Option<Shell>, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = setup::plan(shell)?;
+    eprintln!("{}", plan.describe());
+    if plan.is_noop() {
+        return Ok(());
+    }
+    if !yes && !setup::confirm()? {
+        eprintln!("Nothing was written.");
+        return Ok(());
+    }
+    setup::apply(&plan)?;
+    eprintln!("Done. Open a new shell, or reload the file, to pick it up.");
+    Ok(())
 }
 
 fn init(shell: Shell, out: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {

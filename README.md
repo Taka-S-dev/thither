@@ -16,40 +16,57 @@ tadoru 経由で移動したフォルダは、zoxide が利用できる場合に
 
 ## 導入
 
-### Windows: zip を展開するだけ
+```text
+tadoru setup
+```
 
-リリースの zip には tadoru.exe と、cmd.exe 用の `c.cmd` `cf.cmd` `z.cmd` `zi.cmd`、
-PowerShell 用の `c.ps1` `cf.ps1` `z.ps1` `zi.ps1` が入っている。
-PATH の通ったフォルダに展開すれば、cmd.exe でも PowerShell でも設定ファイルを触らずに使える。
+書き込む内容と対象ファイルを表示してから確認を求める。`--yes` で確認を省ける。
+シェルは環境から判定するので、明示したいときだけ `tadoru setup powershell` のように指定する。
 
-- 展開したフォルダの中身がブロックされて .ps1 が動かないときは、そのフォルダで `Unblock-File *.ps1`
-- PowerShell の実行ポリシーが Restricted のままだと .ps1 は動かない。`RemoteSigned` にするか、下の 1 行方式を使う
-- `$PROFILE` で zoxide init している場合、`z` と `zi` は zoxide のエイリアスが優先される。
-  tadoru の `zi` を使いたいときは下の 1 行方式にする(エイリアスを外してから定義する)
+追記するのは目印で囲んだ 1 ブロックだけ。再実行しても増えず、中身が変わっていれば差し替える。
+やめるときは目印から目印までを消す。
 
-手元でビルドしたときは、同じ構成を自分で作れる。
+```text
+# >>> tadoru >>>
+Invoke-Expression (& C:\path\to\tadoru.exe init powershell | Out-String)
+# <<< tadoru <<<
+```
 
-```powershell
-cargo build --release
+cmd.exe には起動時に読むファイルが無いので、`setup` の対象外。次で PATH の通ったフォルダに置く。
+リリースの zip にはこの 4 本が同梱されているので、展開するだけでよい。
+
+```text
 tadoru init cmd --out C:\path\on\PATH
+```
+
+### 手動で設定する
+
+dotfiles をバージョン管理している、共有マシンで設定を書き換えられない、
+zoxide との読み込み順を自分で決めたい。そういう場合は上のブロックの中身を自分で書く。
+`z` と `zi` は zoxide がエイリアスとして定義するため、**zoxide init より後**に置く必要がある。
+
+| シェル | 書くファイル | 書く内容 |
+|---|---|---|
+| PowerShell | `$PROFILE` | `Invoke-Expression (& C:\path\to\tadoru.exe init powershell \| Out-String)` |
+| bash / zsh | `~/.bashrc` `~/.zshrc` | `eval "$(tadoru init bash)"` |
+| cmd.exe | なし | `tadoru init cmd --out <PATH の通ったフォルダ>` |
+
+`tadoru init <shell>` は初期化コードを標準出力に書くだけで、ファイルには触らない。
+
+### PowerShell の .ps1 を PATH に置く方法
+
+プロファイルを触らずに済ませたい場合、`c.ps1` などを PATH に置く手もある。
+
+```text
 tadoru init powershell --out C:\path\on\PATH
 ```
 
-### PowerShell: プロファイルに 1 行
+ただし 2 つ制約がある。zoxide を使っていると `z` と `zi` はエイリアスが優先されるので、
+この方法では置き換えられない。実行ポリシーが Restricted だと .ps1 は動かない。
+zip から展開した直後はブロック属性が付くことがあるので、そのフォルダで `Unblock-File *.ps1` を実行する。
 
-`$PROFILE` の zoxide init より後に足す。
-
-```powershell
-Invoke-Expression (& C:\path\to\tadoru.exe init powershell | Out-String)
-```
-
-### bash / zsh: rc ファイルに 1 行
-
-`~/.bashrc` か `~/.zshrc` の zoxide init より後に足す。
-
-```bash
-eval "$(tadoru init bash)"
-```
+本体を更新してシェル連携の内容が変わった場合は、`tadoru setup` か `tadoru init` を実行し直す。
+関数を使う PowerShell / bash では、新しいシェルを開くか初期化を読み直す。
 
 ## コマンド
 
@@ -68,9 +85,6 @@ browse は yazi 風に 1 階層ずつ歩く画面で、Right で入り、Left �
 モード名を再度クリックしても現在地や選択はリセットしない。
 F5 で現在の一覧とプレビューを更新できる。browse では絞り込みと選択位置を可能な限り保つ。
 履歴の取得失敗は画面に理由を表示し、F5 で再試行、Tab でほかのモードへ移動できる。
-
-本体だけ更新した場合も、シェル連携の変更を反映するには `tadoru init` を再実行する。
-関数を使う PowerShell / bash では、初期化を読み直すか新しいシェルを開く。
 
 ### 戻る・お気に入り
 
