@@ -1,4 +1,4 @@
-//! Browse mode: walk the tree one level at a time, yazi style, with the
+//! Browse mode: walk the tree one level at a time in Miller columns, with
 //! parent on the left, the current directory in the middle and the selected
 //! entry's contents on the right. Typing filters the current level only.
 

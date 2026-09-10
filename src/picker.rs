@@ -1191,7 +1191,9 @@ impl Picker {
         title
     }
 
-    /// Three columns like yazi: parent, current directory, selected entry's contents.
+    /// Miller columns: parent, current directory, selected entry's contents. The
+    /// arrangement predates every terminal file manager; Finder's column view and
+    /// ranger use it too.
     fn render_browse(&mut self, area: Rect, frame: &mut ratatui::Frame) {
         let block = Block::default()
             .borders(Borders::ALL)

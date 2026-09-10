@@ -54,7 +54,8 @@ Tab でモードが dirs → files → recent → favorites → browse と切り
 | Right / Left | browse で階層を下る・上がる |
 | Alt+← / Alt+→ | browse の訪問履歴を戻る・進む |
 
-browse は yazi 風の 3 列で、左が親、中央が今の階層、右が選択先の中身。
+browse は Miller columns。左が親、中央が今の階層、右が選択先の中身。
+Finder の列表示や ranger、yazi と同じ並べ方で、cd 専用なのでファイル操作は持たない。
 上枠のモード名と、その下のパスはクリックできる。パスは階層名を押すとそこへ移動する。
 
 くわしくは[画面と操作](docs/guide/screen.md)と[アクションメニュー](docs/guide/actions.md)。

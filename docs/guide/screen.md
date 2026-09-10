@@ -102,7 +102,10 @@ tadoru favorite list
 
 ## browse の移動と履歴
 
-browse は 3 列。左が親、中央が今の階層、右が選択先の中身。
+browse は [Miller columns](https://en.wikipedia.org/wiki/Miller_columns)。
+1980 年に考案され、NeXTSTEP を経て macOS の Finder の列表示になった並べ方で、
+ranger や yazi も同じ形をとる。左が親、中央が今の階層、右が選択先の中身。
+tadoru は cd の道具なので、コピー・削除・名前変更は持たない。
 中央だけが背景色とポインタを持つので、カーソルがどの列にあるか迷わない。
 左右の列は今いるフォルダをアクセント色で示す。
 
